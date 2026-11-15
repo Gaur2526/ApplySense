@@ -1,0 +1,22 @@
+database_url: sqlite:///./applysense.db
+company_registry_path: data/company_registry.json
+log_level: INFO
+
+scout:
+  request_timeout_seconds: 15
+  retries: 3
+  concurrency: 4
+
+filters:
+  keywords: []
+  excluded_keywords: []
+  seniority_titles: [senior, sr, lead, staff, principal, manager, head, architect, director, vp, "vice president", chief]
+  # locations is retained as a compatibility alias for preferred city ordering.
+  locations: []
+  preferred_cities: []
+  max_min_years: 2
+  employment_types: [full-time]
+
+telegram:
+  enabled: false
+  # Set credentials in .env; notifications remain disabled until explicitly enabled.
