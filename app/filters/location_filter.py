@@ -21,6 +21,10 @@ OUTSIDE_INDIA = re.compile(
     r"melbourne|berlin|paris)\b",
     re.I,
 )
+CITY_ALIAS_GROUPS = (
+    frozenset({"gurgaon", "gurugram"}),
+    frozenset({"bengaluru", "bangalore"}),
+)
 
 
 def matches_location(job: dict[str, Any]) -> FilterDecision:
@@ -51,6 +55,8 @@ def preferred_city_rank(job: dict[str, Any], preferred_cities: list[str]) -> int
     """Sort preferred city matches first without rejecting other eligible jobs."""
     location = str(job.get("location") or "").casefold()
     for rank, city in enumerate(preferred_cities):
-        if city.casefold() in location:
+        normalized_city = re.sub(r"\s+", " ", city).strip().casefold()
+        aliases = next((group for group in CITY_ALIAS_GROUPS if normalized_city in group), {normalized_city})
+        if any(re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", location) for alias in aliases):
             return rank
     return len(preferred_cities)

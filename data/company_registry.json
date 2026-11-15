@@ -169,9 +169,9 @@
   },
   {
     "company_name": "MongoDB",
-    "ats_provider": null,
-    "board_identifier": null,
-    "status": "pending_verification",
+    "ats_provider": "greenhouse",
+    "board_identifier": "mongodb",
+    "status": "verified",
     "careers_url": null
   },
   {

@@ -80,3 +80,11 @@ def test_check_company_reports_missing_board_on_404(monkeypatch, capsys):
 def test_check_company_requires_greenhouse_source():
     with pytest.raises(SystemExit):
         cli.parser().parse_args(["check-company", "id"])
+
+
+@pytest.mark.parametrize("yaml_text", ["filters:\n  keywords: []\n", "filters: {}\n", "{}\n"])
+def test_validate_config_rejects_missing_or_empty_keywords(tmp_path, capsys, yaml_text):
+    config = tmp_path / "empty-keywords.yaml"
+    config.write_text(yaml_text, encoding="utf-8")
+    assert cli.main(["--config", str(config), "validate-config"]) == 2
+    assert "Configuration invalid" in capsys.readouterr().out

@@ -8,12 +8,39 @@ scout:
   concurrency: 4
 
 filters:
-  keywords: []
-  excluded_keywords: []
-  seniority_titles: [senior, sr, lead, staff, principal, manager, head, architect, director, vp, "vice president", chief]
-  # locations is retained as a compatibility alias for preferred city ordering.
+  keywords:
+    - software engineer
+    - software developer
+    - software development engineer
+    - web developer
+    - java developer
+    - react developer
+    - node developer
+    - sde
+    - full stack
+    - fullstack
+    - frontend
+    - front end
+    - front-end
+    - backend
+    - back end
+    - back-end
+    - python developer
+    - ai engineer
+    - genai
+    - machine learning engineer
+    - associate software engineer
+  excluded_keywords:
+    - intern
+    - internship
+    - sales
+    - account
+    - marketing
+    - recruiter
+    - support
+  seniority_titles: [senior, sr, lead, staff, principal, manager, head, architect, director, vp, "vice president", chief, distinguished, fellow, executive]
   locations: []
-  preferred_cities: []
+  preferred_cities: [Noida, Gurgaon, Gurugram, Delhi, Bengaluru, Bangalore, Hyderabad, Pune]
   max_min_years: 2
   employment_types: [full-time]
 

@@ -28,6 +28,15 @@ def test_keyword_filter_returns_tri_state_decisions():
     assert matches_keywords(JOB, []).reason
 
 
+def test_keyword_terms_use_word_boundaries_and_support_phrases():
+    internal = {**JOB, "title": "Internal Tools Engineer", "description": ""}
+    assert matches_keywords(internal, ["engineer"], ["intern"]).status is FilterStatus.PASS
+    assert matches_keywords({**JOB, "title": "Full Stack Engineer"}, ["full stack"]).status is FilterStatus.PASS
+    assert matches_keywords({**JOB, "title": "Fullstack Engineer"}, ["full stack"]).status is FilterStatus.REJECT
+    assert matches_keywords({**JOB, "title": "Full\nStack Engineer"}, ["full stack"]).status is FilterStatus.PASS
+    assert matches_keywords({**JOB, "title": "Internal Tools Engineer"}, ["intern"]).status is FilterStatus.REJECT
+
+
 def test_experience_parses_required_patterns_and_ranges():
     assert parse_experience_requirement("3+ years required") == 3
     assert parse_experience_requirement("2-4 years experience") == 2
@@ -117,6 +126,17 @@ def test_preferred_city_only_affects_ordering():
     assert preferred_city_rank({"location": "Pune, India"}, preferred) == 1
     assert preferred_city_rank({"location": "Remote - India"}, preferred) == 2
     assert matches_location({"location": "Remote - India"}).status is FilterStatus.PASS
+
+
+def test_city_aliases_share_filter_eligibility_and_preferred_order_rank():
+    assert matches_location({"location": "Gurgaon, India"}).status is FilterStatus.PASS
+    assert matches_location({"location": "Gurugram, India"}).status is FilterStatus.PASS
+    assert matches_location({"location": "Bengaluru, India"}).status is FilterStatus.PASS
+    assert matches_location({"location": "Bangalore, India"}).status is FilterStatus.PASS
+    assert preferred_city_rank({"location": "Gurugram, India"}, ["Gurgaon"]) == 0
+    assert preferred_city_rank({"location": "Gurgaon, India"}, ["Gurugram"]) == 0
+    assert preferred_city_rank({"location": "Bangalore, India"}, ["Bengaluru"]) == 0
+    assert preferred_city_rank({"location": "Bengaluru, India"}, ["Bangalore"]) == 0
 
 
 def test_seniority_title_terms_are_whole_words():

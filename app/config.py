@@ -21,7 +21,7 @@ class ScoutConfig(StrictModel):
 
 
 class FilterConfig(StrictModel):
-    keywords: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list, min_length=1)
     excluded_keywords: list[str] = Field(default_factory=list)
     seniority_titles: list[str] = Field(default_factory=lambda: [
         "senior", "sr", "lead", "staff", "principal", "manager", "head",
@@ -31,6 +31,13 @@ class FilterConfig(StrictModel):
     preferred_cities: list[str] = Field(default_factory=list)
     max_min_years: int = Field(default=2, ge=0, le=50)
     employment_types: list[str] = Field(default_factory=lambda: ["full-time"])
+
+    @field_validator("keywords")
+    @classmethod
+    def keywords_must_not_be_blank(cls, value: list[str]) -> list[str]:
+        if any(not keyword.strip() for keyword in value):
+            raise ValueError("keywords must not contain blank entries")
+        return value
 
 
 class TelegramConfig(StrictModel):
@@ -98,4 +105,7 @@ def load_config(path: str | Path = "config/config.yaml", *, env_file: str | Path
             raw["telegram"][key] = os.environ[env]
     if os.getenv("TELEGRAM_ENABLED") is not None:
         raw["telegram"]["enabled"] = os.environ["TELEGRAM_ENABLED"].lower() in {"1", "true", "yes", "on"}
-    return AppConfig.model_validate(raw)
+    config = AppConfig.model_validate(raw)
+    if not config.filters.keywords:
+        raise ValueError("filters.keywords must include at least one keyword")
+    return config

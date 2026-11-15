@@ -26,13 +26,16 @@ def test_registry_contains_exactly_the_pdf_companies_once():
     assert names == PDF_COMPANY_NAMES
 
 
-def test_pending_companies_are_preserved_and_not_greenhouse_boards():
+def test_pending_companies_are_preserved_and_only_mongodb_is_verified_greenhouse():
     entries = load_registry()
     assert len(entries) == 46
-    assert all(entry.status == "pending_verification" for entry in entries)
-    assert all(entry.ats_provider is None for entry in entries)
-    assert all(entry.board_identifier is None for entry in entries)
-    assert verified_greenhouse_entries(entries) == []
+    pending = [entry for entry in entries if entry.company_name != "MongoDB"]
+    assert all(entry.status == "pending_verification" for entry in pending)
+    assert all(entry.ats_provider is None for entry in pending)
+    assert all(entry.board_identifier is None for entry in pending)
+    mongodb = next(entry for entry in entries if entry.company_name == "MongoDB")
+    assert (mongodb.status, mongodb.ats_provider, mongodb.board_identifier) == ("verified", "greenhouse", "mongodb")
+    assert verified_greenhouse_entries(entries) == [mongodb]
 
 
 def test_existing_careers_urls_are_preserved():
@@ -68,6 +71,21 @@ def test_verified_greenhouse_entry_cannot_have_missing_identifier():
         CompanyEntry(company_name="Invalid Co", ats_provider="greenhouse", status="verified")
 
 
-def test_discovery_does_not_fetch_pending_registry_entries():
+def test_discovery_fetches_only_the_verified_mongodb_board_without_real_http(monkeypatch):
     config = load_config("config/config.yaml", env_file=None)
+    fetched = []
+
+    class ScoutStub:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def fetch_jobs(self, identifier):
+            fetched.append(identifier)
+            return []
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr("app.main.GreenhouseScout", ScoutStub)
     assert asyncio.run(discover(config)) == []
+    assert fetched == ["mongodb"]

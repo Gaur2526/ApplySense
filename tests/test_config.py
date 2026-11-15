@@ -18,6 +18,13 @@ def test_invalid_maximum_minimum_experience_limit_rejected():
         AppConfig.model_validate({"filters": {"max_min_years": 51}})
 
 
+def test_empty_keywords_list_is_rejected():
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate({"filters": {"keywords": []}})
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate({"filters": {"keywords": ["", "  "]}})
+
+
 def test_notification_lease_and_attempt_limits_are_validated():
     with pytest.raises(ValidationError):
         AppConfig.model_validate({"notifications": {"claim_lease_seconds": 0}})
