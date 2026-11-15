@@ -1,3 +1,5 @@
+import pytest
+
 from app.filters.decision import FilterStatus
 from app.filters.employment_filter import matches_employment
 from app.filters.experience_filter import matches_experience, parse_experience_requirement
@@ -74,6 +76,36 @@ def test_experience_parses_required_patterns_and_ranges():
     assert parse_experience_requirement("0-2 years") == 0
     assert parse_experience_requirement("Fresher role") == 0
     assert parse_experience_requirement("No stated requirement") is None
+
+
+@pytest.mark.parametrize("text", [
+    "Requirements: 2-5 years of experience",
+    "Requirements: 2 - 5 years of experience",
+    "Requirements: 2–5 years of experience",
+    "Requirements: 2 to 5 years of experience",
+    "Requirements: 2-5 yrs of experience",
+    "Requirements: 2+ yrs of experience",
+    "Requirements: 2-\n5 years of experience",
+    "Requirements: 2 - 5\nyears of experience",
+])
+def test_experience_parser_accepts_year_range_formats(text):
+    assert parse_experience_requirement(text) == 2
+
+
+def test_experience_range_wins_over_unrelated_boilerplate_years():
+    text = (
+        "Our ideal candidate: Has 2-5 years of professional software engineering experience. "
+        "We have spent 25 years serving customers."
+    )
+    assert parse_experience_requirement(text) == 2
+
+
+def test_enterprise_architecture_posting_experience_is_parsed_from_ideal_candidate_section():
+    description = (
+        "Our ideal candidate: Has 2-5 years of professional software engineering experience. "
+        "Requirements: Strong architecture skills."
+    )
+    assert parse_experience_requirement(description) == 2
 
 
 def test_experience_rejects_only_minimum_above_configured_limit():
@@ -235,6 +267,7 @@ def test_uncertain_jobs_continue_and_keep_reasons_in_storage(tmp_path, monkeypat
     filtered = filter_jobs([job], config)
     assert len(filtered) == 1
     assert filtered[0]["uncertainty_reasons"]
+    assert "Employment type is not stated." not in filtered[0]["uncertainty_reasons"]
 
     async def fake_discover(_config, *, stats=None):
         if stats is not None:
@@ -254,9 +287,19 @@ def test_uncertain_jobs_continue_and_keep_reasons_in_storage(tmp_path, monkeypat
     engine.dispose()
 
 
+def test_non_greenhouse_unknown_employment_remains_an_uncertainty():
+    job = {
+        **JOB, "source": "lever", "employment_type": "", "experience_requirement": 0,
+        "canonical_url": "https://example.com/lever-job",
+    }
+    filtered = filter_jobs([job], AppConfig())
+    assert len(filtered) == 1
+    assert "Employment type is not stated." in filtered[0]["uncertainty_reasons"]
+
+
 def test_discovery_message_has_short_uncertainty_note():
     message = format_job({
         "title": "Engineer", "company": "Example", "location": "Unknown",
         "canonical_url": "https://example.com/job", "uncertainty_reasons": ["Location is unknown."],
     })
-    assert "Check requirements: some role details are uncertain." in message
+    assert "Check: location unclear" in message

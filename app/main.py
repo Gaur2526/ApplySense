@@ -62,6 +62,10 @@ def filter_jobs(jobs: list[dict], config: AppConfig) -> list[dict]:
         job["uncertainty_reasons"] = [
             decision.reason for decision in decisions
             if decision.status is FilterStatus.UNCERTAIN
+            and not (
+                job.get("source") == "greenhouse"
+                and decision.reason == "Employment type is not stated."
+            )
         ]
         if job.get("experience_requirement") is None:
             job["experience_requirement"] = None

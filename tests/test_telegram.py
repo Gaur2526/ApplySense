@@ -57,7 +57,7 @@ def test_format_job_escapes_external_fields_and_uses_safe_anchor():
     assert "Co &amp; &lt; &gt; &quot;" in message
     assert "Location: Remote &lt;India&gt; &amp; &quot;Anywhere&quot;" in message
     assert 'href="https://jobs.example/a%20path?x=1&amp;y=%22two%22%3Cthree%3E"' in message
-    assert "Check requirements: some role details are uncertain." in message
+    assert "Check: unknown" in message
 
 
 def test_format_job_truncates_without_splitting_html_tags_or_entities():
@@ -70,6 +70,39 @@ def test_format_job_truncates_without_splitting_html_tags_or_entities():
     assert message.count("<a ") == message.count("</a>")
     assert not message.endswith(("&", "<", "&amp", "&quot", "&lt", "&gt"))
     assert not re.search(r"&(?:amp|lt|gt|quot|#x27)$", message)
+
+
+def test_format_job_names_uncertain_requirements_and_excludes_greenhouse_employment_type():
+    message = format_job(job(
+        experience_requirement=None,
+        uncertainty_reasons=[
+            "Minimum experience requirement is not stated unambiguously.",
+            "Conflicting minimum experience requirements were found: 2, 5 years.",
+            "Location does not establish India eligibility.",
+            "Employment type is not stated.",
+        ],
+    ))
+    assert "Check: experience not stated; experience conflicting (2, 5 years); location unclear" in message
+    assert "employment type" not in message
+
+
+def test_format_job_keeps_employment_uncertainty_for_other_sources():
+    message = format_job(job(
+        source="lever",
+        uncertainty_reasons=["Employment type is not stated."],
+    ))
+    assert "Check: employment type not stated" in message
+
+
+def test_greenhouse_employment_unknown_alone_does_not_add_a_check_note():
+    message = format_job(job(uncertainty_reasons=["Employment type is not stated."]))
+    assert "Check:" not in message
+
+
+def test_format_job_shows_parsed_experience_and_omits_empty_check_note():
+    message = format_job(job(experience_requirement=2, uncertainty_reasons=[]))
+    assert "Experience: 2+ years" in message
+    assert "Check:" not in message
 
 
 def test_sender_uses_html_parse_mode_and_sends_escaped_payload(monkeypatch):

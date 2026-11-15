@@ -6,6 +6,7 @@ from app.filters.decision import FilterDecision, passed, rejected, uncertain
 
 REQUIREMENT_SECTION = re.compile(
     r"\b(?:requirements?|qualifications?|minimum qualifications|"
+    r"(?:our\s+)?ideal candidate|"
     r"what (?:we(?:'re| are)|you(?:'re| are)) looking for|"
     r"what (?:you|we)(?:'ll| will) bring|your experience|experience requirements)\b\s*:?",
     re.I,

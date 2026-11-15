@@ -75,13 +75,43 @@ def truncate_html(message: str, limit: int = 4096) -> str:
     return "".join(output)
 
 
+def _uncertainty_labels(job: dict) -> list[str]:
+    labels: list[str] = []
+    source = str(job.get("source") or "").casefold()
+    for reason in job.get("uncertainty_reasons") or []:
+        reason = str(reason)
+        lowered = reason.casefold()
+        if source == "greenhouse" and lowered == "employment type is not stated.":
+            continue
+        if "conflicting minimum experience requirements" in lowered:
+            match = re.search(r"found:\s*(.+?)\s+years?\.?$", reason, re.I)
+            label = f"experience conflicting ({match.group(1)} years)" if match else "experience conflicting"
+        elif "minimum experience requirement is not stated" in lowered:
+            label = "experience not stated"
+        elif "location" in lowered:
+            label = "location unclear"
+        elif "employment type is not stated" in lowered:
+            label = "employment type not stated"
+        elif "employment type" in lowered:
+            label = "employment type unclear"
+        else:
+            shortened = " ".join(re.sub(r"[.!?]+$", "", reason).split()[:6])
+            label = shortened.casefold() or "details unclear"
+        if label not in labels:
+            labels.append(label)
+    return labels
+
+
 def format_job(job: dict, *, limit: int = 4096) -> str:
     title = html.escape(str(job.get("title") or "Untitled"), quote=True)
     company = html.escape(str(job.get("company") or ""), quote=True)
     location = html.escape(str(job.get("location") or "Unspecified"), quote=True)
     url = html.escape(quote(str(job.get("canonical_url") or ""), safe=":/?#[]@!$&'()*+,;=%"), quote=True)
     lines = [f"<b>{title} — {company}</b>", f"Location: {location}"]
-    if job.get("uncertainty_reasons"):
-        lines.append("Check requirements: some role details are uncertain.")
+    if job.get("experience_requirement") is not None:
+        lines.append(f"Experience: {job['experience_requirement']}+ years")
+    checks = _uncertainty_labels(job)
+    if checks:
+        lines.append("Check: " + "; ".join(checks))
     lines.append(f'<a href="{url}">View job</a>')
     return truncate_html("\n".join(lines), limit=limit)
