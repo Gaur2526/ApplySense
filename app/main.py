@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from app.config import AppConfig
 from app.companies.registry import load_registry, verified_greenhouse_entries
@@ -13,12 +14,38 @@ from app.filters.experience_filter import matches_experience, parse_experience_r
 from app.filters.keyword_filter import matches_keywords
 from app.filters.location_filter import matches_location, preferred_city_rank
 from app.filters.seniority_filter import matches_seniority
-from app.notifications.telegram import send_jobs
+from app.notifications.telegram import send_jobs, send_summary
 from app.scouts.greenhouse import GreenhouseScout
 from app.utils.hashing import secondary_job_hash, url_hash
 from app.utils.logger import configure_logging
 
 LOG = logging.getLogger(__name__)
+
+
+def _notification_priority(job: dict, preferred_cities: list[str]) -> tuple[int, int, float]:
+    location = str(job.get("location") or "")
+    is_remote_india_compatible = "remote" in location.casefold() and matches_location(job).status is FilterStatus.PASS
+    if is_remote_india_compatible:
+        category, city_rank = 0, 0
+    else:
+        city_rank = preferred_city_rank(job, preferred_cities)
+        if city_rank < len(preferred_cities):
+            category = 1
+        else:
+            category, city_rank = 2, 0
+    timestamp = job.get("posted_at") or job.get("discovered_at")
+    try:
+        if isinstance(timestamp, str):
+            timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        if isinstance(timestamp, datetime):
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            newest = timestamp.timestamp()
+        else:
+            newest = 0.0
+    except (TypeError, ValueError, OverflowError):
+        newest = 0.0
+    return category, city_rank, -newest
 
 
 def filter_jobs(jobs: list[dict], config: AppConfig) -> list[dict]:
@@ -123,11 +150,13 @@ def run(
         stored_by_url = {row.url_hash: row for row in stored_rows}
         stored_by_secondary = {row.secondary_key: row for row in stored_rows}
         candidates = []
+        resolved_ids: set[int] = set()
         for job in jobs:
             stored = stored_by_url.get(url_hash(job["canonical_url"])) or stored_by_secondary.get(
                 secondary_job_hash(job["company"], job["title"], job.get("location", "")))
-            if stored is not None and not stored.is_baseline:
+            if stored is not None and not stored.is_baseline and stored.id not in resolved_ids:
                 candidates.append((job, stored))
+                resolved_ids.add(stored.id)
         fresh = [job for job, stored in candidates if stored.notified_at is None]
         LOG.info("Found %d matching new jobs (%d fetched, mode=%s)", len(fresh), len(jobs), mode)
         if baseline_mode:
@@ -138,6 +167,8 @@ def run(
             engine.dispose()
             return inserted
         notify_jobs = fresh if mode == "discovery" else [job for job in fresh if not job["uncertainty_reasons"]]
+        preferred_cities = list(dict.fromkeys([*config.filters.preferred_cities, *config.filters.locations]))
+        notify_jobs.sort(key=lambda job: _notification_priority(job, preferred_cities))
         if mode == "qualified":
             LOG.info("%d uncertain jobs remain stored for the later matcher", len(fresh) - len(notify_jobs))
         if not notify or not config.telegram.enabled:
@@ -153,8 +184,32 @@ def run(
         config.require_telegram()
         sent = 0
         errors = discovery_stats.get("errors", 0)
+        permanently_failed = 0
         stored_for_job = {id(job): stored for job, stored in candidates}
+        statuses = repo.notification_statuses(stored.id for job, stored in candidates)
+        terminal_jobs = []
         for job in notify_jobs:
+            stored = stored_for_job.get(id(job))
+            notification = statuses.get(stored.id) if stored is not None else None
+            if notification and notification.state == "failed" and notification.attempt_count >= config.notifications.max_attempts:
+                terminal_jobs.append(job)
+        for job in terminal_jobs:
+            stored = stored_for_job[id(job)]
+            claim = repo.claim_notification(
+                stored.id,
+                lease_seconds=config.notifications.claim_lease_seconds,
+                max_attempts=config.notifications.max_attempts,
+            )
+            if claim is NotificationClaimResult.EXHAUSTED:
+                permanently_failed += 1
+                LOG.error("Permanently failed notification for job %s", stored.id)
+        terminal_ids = {id(job) for job in terminal_jobs}
+        notify_jobs = [job for job in notify_jobs if id(job) not in terminal_ids]
+        cap = config.notifications.per_run_cap
+        batch_jobs = notify_jobs[:cap]
+        queued_count = max(0, len(notify_jobs) - len(batch_jobs))
+        claimed: list[tuple[dict, int]] = []
+        for job in batch_jobs:
             stored = stored_for_job.get(id(job))
             if stored is None:
                 continue
@@ -164,20 +219,29 @@ def run(
                 max_attempts=config.notifications.max_attempts,
             )
             if claim is NotificationClaimResult.EXHAUSTED:
-                errors += 1
-                LOG.error("Notification retry limit exhausted for job %s", stored.id)
+                permanently_failed += 1
+                LOG.error("Permanently failed notification for job %s", stored.id)
                 continue
             if claim is not NotificationClaimResult.CLAIMED:
                 continue
-            try:
-                sent += asyncio.run(send_jobs(config.telegram.bot_token, config.telegram.chat_id, [job]))
-                repo.mark_notification_sent(stored.id)
-            except Exception as exc:
+            claimed.append((job, stored.id))
+        if claimed:
+            results = asyncio.run(send_jobs(config.telegram.bot_token, config.telegram.chat_id,
+                                            [job for job, _job_id in claimed]))
+            for (_job, job_id), confirmed in zip(claimed, results):
+                if confirmed:
+                    sent += 1
+                    repo.mark_notification_sent(job_id)
+                else:
+                    errors += 1
+                    repo.mark_notification_failed(job_id, "Telegram did not confirm the message")
+        if queued_count:
+            summary = f"{queued_count} more new jobs queued for the next run"
+            if not asyncio.run(send_summary(config.telegram.bot_token, config.telegram.chat_id, summary)):
                 errors += 1
-                repo.mark_notification_failed(stored.id, str(exc))
-                LOG.exception("Telegram notification failed for job %s", stored.id)
+                LOG.warning("Telegram did not confirm the queued-jobs summary")
         repo.finish_run(run_record, fetched=discovery_stats.get("fetched", len(jobs)),
                         filtered=discovery_stats.get("filtered", len(jobs)), new=inserted,
-                        notified=sent, errors=errors)
+                        notified=sent, errors=errors, permanently_failed=permanently_failed)
     engine.dispose()
     return sent

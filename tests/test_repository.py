@@ -163,6 +163,7 @@ def test_failed_notification_attempt_limit_exhausts_and_stays_failed(tmp_path):
         assert repo.claim_notification(job_id, max_attempts=2) is NotificationClaimResult.CLAIMED
         repo.mark_notification_failed(job_id, "attempt two")
         assert repo.claim_notification(job_id, max_attempts=2) is NotificationClaimResult.EXHAUSTED
+        assert repo.claim_notification(job_id, max_attempts=2) is NotificationClaimResult.ALREADY_EXHAUSTED
         notification = session.scalar(select(Notification).where(Notification.job_id == job_id))
         assert notification.state == "failed"
         assert notification.attempt_count == 2
@@ -238,7 +239,7 @@ def test_second_discovery_run_cannot_notify_same_job(tmp_path, monkeypatch):
 
     async def fake_send(_token, _chat, jobs):
         sent.extend(jobs)
-        return len(jobs)
+        return [True] * len(jobs)
 
     monkeypatch.setattr(main, "discover", fake_discover)
     monkeypatch.setattr(main, "send_jobs", fake_send)
@@ -278,7 +279,7 @@ def test_same_source_distinct_requisitions_with_same_title_and_location_are_kept
 
     async def fake_send(_token, _chat, outgoing):
         sent.extend(outgoing)
-        return len(outgoing)
+        return [True] * len(outgoing)
 
     monkeypatch.setattr(main, "discover", fake_discover)
     monkeypatch.setattr(main, "send_jobs", fake_send)
@@ -312,7 +313,7 @@ def test_cross_source_secondary_duplicate_is_notified_once(tmp_path, monkeypatch
 
     async def fake_send(_token, _chat, outgoing):
         sent.extend(outgoing)
-        return len(outgoing)
+        return [True] * len(outgoing)
 
     monkeypatch.setattr(main, "discover", fake_discover)
     monkeypatch.setattr(main, "send_jobs", fake_send)
@@ -348,7 +349,7 @@ def test_baseline_jobs_are_suppressed_on_the_immediate_normal_run(tmp_path, monk
 
     async def fake_send(_token, _chat, outgoing):
         sent.extend(outgoing)
-        return len(outgoing)
+        return [True] * len(outgoing)
 
     monkeypatch.setattr(main, "discover", fake_discover)
     monkeypatch.setattr(main, "send_jobs", fake_send)
@@ -393,9 +394,11 @@ def test_exhausted_notification_attempt_is_counted_in_run_summary(tmp_path, monk
     monkeypatch.setattr(main, "discover", fake_discover)
     monkeypatch.setattr(main, "send_jobs", no_send)
     assert main.run(config, notify=True) == 0
+    assert main.run(config, notify=True) == 0
     with Session(engine) as session:
-        latest_run = session.scalar(select(Run).order_by(Run.id.desc()))
+        runs = list(session.scalars(select(Run).order_by(Run.id)))
         notification = session.scalar(select(Notification))
-        assert latest_run.errors == 1
+        assert runs[-2].errors == 0 and runs[-2].permanently_failed == 1
+        assert runs[-1].errors == 0 and runs[-1].permanently_failed == 0
         assert notification.state == "failed"
     engine.dispose()

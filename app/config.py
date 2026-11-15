@@ -42,6 +42,7 @@ class TelegramConfig(StrictModel):
 class NotificationConfig(StrictModel):
     claim_lease_seconds: int = Field(default=900, ge=1, le=86400)
     max_attempts: int = Field(default=3, ge=1, le=20)
+    per_run_cap: int = Field(default=20, ge=1, le=500)
 
 
 class AppConfig(StrictModel):

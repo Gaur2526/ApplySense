@@ -55,6 +55,7 @@ class Notification(Base):
     job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), nullable=False)
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    permanent_failure_reported: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -70,3 +71,4 @@ class Run(Base):
     new: Mapped[int] = mapped_column(Integer, default=0)
     notified: Mapped[int] = mapped_column(Integer, default=0)
     errors: Mapped[int] = mapped_column(Integer, default=0)
+    permanently_failed: Mapped[int] = mapped_column(Integer, default=0)

@@ -14,6 +14,7 @@ class NotificationClaimResult(str, Enum):
     CLAIMED = "claimed"
     BUSY = "busy"
     EXHAUSTED = "exhausted"
+    ALREADY_EXHAUSTED = "already_exhausted"
 
 
 class JobRepository:
@@ -44,6 +45,17 @@ class JobRepository:
             for row in rows:
                 found[row.id] = row
         return list(found.values())
+
+    def notification_statuses(self, job_ids: Iterable[int], *, chunk_size: int = 400) -> dict[int, Notification]:
+        found: dict[int, Notification] = {}
+        ordered = list(set(job_ids))
+        for offset in range(0, len(ordered), chunk_size):
+            rows = self.session.scalars(select(Notification).where(
+                Notification.job_id.in_(ordered[offset:offset + chunk_size])
+            ))
+            for row in rows:
+                found[row.job_id] = row
+        return found
 
     def add_if_new(self, job: dict, *, baseline: bool = False) -> bool:
         return self.add_many([job], baseline=baseline) == 1
@@ -135,14 +147,24 @@ class JobRepository:
             update(Notification)
             .where(Notification.job_id == job_id, Notification.state == "pending",
                    Notification.updated_at <= stale_before, Notification.attempt_count >= max_attempts)
-            .values(state="failed", updated_at=utc_now(), error="notification claim lease expired after maximum attempts")
+            .values(state="failed", updated_at=utc_now(), error="notification claim lease expired after maximum attempts",
+                    permanent_failure_reported=True)
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        reported_now = self.session.execute(
+            update(Notification)
+            .where(Notification.job_id == job_id, Notification.state == "failed",
+                   Notification.attempt_count >= max_attempts, Notification.permanent_failure_reported.is_(False))
+            .values(permanent_failure_reported=True)
             .execution_options(synchronize_session=False)
         ).rowcount
         row = self.session.execute(select(Notification.state, Notification.attempt_count)
                                    .where(Notification.job_id == job_id)).one_or_none()
         self.session.commit()
-        if expired_exhausted or (row and row.state == "failed" and row.attempt_count >= max_attempts):
+        if expired_exhausted or reported_now:
             return NotificationClaimResult.EXHAUSTED
+        if row and row.state == "failed" and row.attempt_count >= max_attempts:
+            return NotificationClaimResult.ALREADY_EXHAUSTED
         return NotificationClaimResult.BUSY
 
     def mark_notification_sent(self, job_id: int) -> None:
@@ -168,13 +190,15 @@ class JobRepository:
         self.session.commit()
         return run
 
-    def finish_run(self, run: Run, *, fetched: int, filtered: int, new: int, notified: int, errors: int) -> None:
+    def finish_run(self, run: Run, *, fetched: int, filtered: int, new: int, notified: int, errors: int,
+                   permanently_failed: int = 0) -> None:
         run.finished_at = utc_now()
         run.fetched = fetched
         run.filtered = filtered
         run.new = new
         run.notified = notified
         run.errors = errors
+        run.permanently_failed = permanently_failed
         self.session.commit()
 
     def unseen(self) -> list[Job]:

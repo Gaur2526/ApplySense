@@ -10,6 +10,7 @@ def test_sample_config_validates():
     assert config.company_registry_path == "data/company_registry.json"
     assert config.notifications.claim_lease_seconds == 900
     assert config.notifications.max_attempts == 3
+    assert config.notifications.per_run_cap == 20
 
 
 def test_invalid_maximum_minimum_experience_limit_rejected():
