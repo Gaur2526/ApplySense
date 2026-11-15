@@ -1,10 +1,19 @@
 from collections.abc import Iterable
-from sqlalchemy import select, update
+from datetime import timedelta
+from enum import Enum
+
+from sqlalchemy import select, tuple_, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.database.models import Job, Notification, Run, utc_now
 from app.utils.hashing import secondary_job_hash, url_hash
+
+
+class NotificationClaimResult(str, Enum):
+    CLAIMED = "claimed"
+    BUSY = "busy"
+    EXHAUSTED = "exhausted"
 
 
 class JobRepository:
@@ -25,6 +34,17 @@ class JobRepository:
                     found[row.id] = row
         return list(found.values())
 
+    def get_many_by_source_ids(self, identities: Iterable[tuple[str, str]], *, chunk_size: int = 400) -> list[Job]:
+        found: dict[int, Job] = {}
+        ordered = list(set(identities))
+        for offset in range(0, len(ordered), chunk_size):
+            rows = self.session.scalars(select(Job).where(
+                tuple_(Job.source, Job.source_id).in_(ordered[offset:offset + chunk_size])
+            ))
+            for row in rows:
+                found[row.id] = row
+        return list(found.values())
+
     def add_if_new(self, job: dict, *, baseline: bool = False) -> bool:
         return self.add_many([job], baseline=baseline) == 1
 
@@ -41,28 +61,46 @@ class JobRepository:
             secondary_keys=(job["secondary_key"] for job in prepared),
             chunk_size=chunk_size,
         )
+        existing.extend(self.get_many_by_source_ids(
+            ((job["source"], job["source_id"]) for job in prepared), chunk_size=chunk_size
+        ))
         by_url_hash = {job.url_hash: job for job in existing}
-        by_secondary = {job.secondary_key: job for job in existing}
+        by_source_id = {(job.source, job.source_id): job for job in existing}
+        by_secondary: dict[str, list[Job]] = {}
+        for row in existing:
+            by_secondary.setdefault(row.secondary_key, []).append(row)
         inserted = 0
         for job in prepared:
-            found = by_url_hash.get(job["url_hash"]) or by_secondary.get(job["secondary_key"])
+            found = by_url_hash.get(job["url_hash"]) or by_source_id.get((job["source"], job["source_id"]))
+            if found is None:
+                same_source_secondary = any(
+                    row.source == job["source"] for row in by_secondary.get(job["secondary_key"], [])
+                )
+                if not same_source_secondary:
+                    found = next((row for row in by_secondary.get(job["secondary_key"], [])
+                                  if row.source != job["source"]), None)
             if found is not None:
                 if found.content_hash != job["content_hash"]:
                     found.description = job.get("description", "")
                     found.content_hash = job["content_hash"]
                     found.needs_rescore = True
+                if baseline:
+                    found.is_baseline = True
                 continue
             row = Job(**job, is_baseline=baseline)
             self.session.add(row)
             # Prevent duplicate items within the same input batch from being inserted.
             by_url_hash[row.url_hash] = row
-            by_secondary[row.secondary_key] = row
+            by_source_id[(row.source, row.source_id)] = row
+            by_secondary.setdefault(row.secondary_key, []).append(row)
             inserted += 1
         self.session.commit()
         return inserted
 
-    def claim_notification(self, job_id: int) -> bool:
-        """Atomically claim an initial or previously failed notification attempt."""
+    def claim_notification(
+        self, job_id: int, *, lease_seconds: int = 900, max_attempts: int = 3
+    ) -> NotificationClaimResult:
+        """Atomically claim an initial, failed, or expired notification attempt."""
         inserted = self.session.execute(
             sqlite_insert(Notification)
             .values(job_id=job_id, state="pending", attempt_count=1, updated_at=utc_now())
@@ -70,14 +108,42 @@ class JobRepository:
         ).rowcount
         if inserted:
             self.session.commit()
-            return True
+            return NotificationClaimResult.CLAIMED
+        stale_before = utc_now() - timedelta(seconds=lease_seconds)
+        reclaimed_pending = self.session.execute(
+            update(Notification)
+            .where(Notification.job_id == job_id, Notification.state == "pending",
+                   Notification.updated_at <= stale_before, Notification.attempt_count < max_attempts)
+            .values(state="pending", attempt_count=Notification.attempt_count + 1,
+                    updated_at=utc_now(), error=None)
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if reclaimed_pending:
+            self.session.commit()
+            return NotificationClaimResult.CLAIMED
         reclaimed = self.session.execute(
             update(Notification)
-            .where(Notification.job_id == job_id, Notification.state == "failed")
+            .where(Notification.job_id == job_id, Notification.state == "failed",
+                   Notification.attempt_count < max_attempts)
             .values(state="pending", attempt_count=Notification.attempt_count + 1, updated_at=utc_now(), error=None)
+            .execution_options(synchronize_session=False)
         ).rowcount
+        if reclaimed:
+            self.session.commit()
+            return NotificationClaimResult.CLAIMED
+        expired_exhausted = self.session.execute(
+            update(Notification)
+            .where(Notification.job_id == job_id, Notification.state == "pending",
+                   Notification.updated_at <= stale_before, Notification.attempt_count >= max_attempts)
+            .values(state="failed", updated_at=utc_now(), error="notification claim lease expired after maximum attempts")
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        row = self.session.execute(select(Notification.state, Notification.attempt_count)
+                                   .where(Notification.job_id == job_id)).one_or_none()
         self.session.commit()
-        return reclaimed == 1
+        if expired_exhausted or (row and row.state == "failed" and row.attempt_count >= max_attempts):
+            return NotificationClaimResult.EXHAUSTED
+        return NotificationClaimResult.BUSY
 
     def mark_notification_sent(self, job_id: int) -> None:
         self.session.execute(

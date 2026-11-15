@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -17,6 +17,7 @@ class Job(Base):
     __table_args__ = (
         UniqueConstraint("canonical_url", name="uq_jobs_canonical_url"),
         UniqueConstraint("url_hash", name="uq_jobs_url_hash"),
+        UniqueConstraint("source", "source_id", name="uq_jobs_source_source_id"),
         Index("ix_jobs_secondary_key", "secondary_key"),
     )
 
@@ -44,7 +45,11 @@ class Job(Base):
 
 class Notification(Base):
     __tablename__ = "notifications"
-    __table_args__ = (UniqueConstraint("job_id", name="uq_notifications_job_id"),)
+    __table_args__ = (
+        UniqueConstraint("job_id", name="uq_notifications_job_id"),
+        CheckConstraint("state IN ('pending', 'sent', 'failed')", name="ck_notifications_state"),
+        CheckConstraint("attempt_count >= 0", name="ck_notifications_attempt_count"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), nullable=False)

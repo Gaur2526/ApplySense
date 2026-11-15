@@ -20,3 +20,7 @@ filters:
 telegram:
   enabled: false
   # Set credentials in .env; notifications remain disabled until explicitly enabled.
+
+notifications:
+  claim_lease_seconds: 900
+  max_attempts: 3

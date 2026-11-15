@@ -6,7 +6,7 @@ import logging
 from app.config import AppConfig
 from app.companies.registry import load_registry, verified_greenhouse_entries
 from app.database.connection import initialize_database, make_engine, make_session_factory
-from app.database.repository import JobRepository
+from app.database.repository import JobRepository, NotificationClaimResult
 from app.filters.decision import FilterStatus
 from app.filters.employment_filter import matches_employment
 from app.filters.experience_filter import matches_experience, parse_experience_requirement
@@ -156,7 +156,18 @@ def run(
         stored_for_job = {id(job): stored for job, stored in candidates}
         for job in notify_jobs:
             stored = stored_for_job.get(id(job))
-            if stored is None or not repo.claim_notification(stored.id):
+            if stored is None:
+                continue
+            claim = repo.claim_notification(
+                stored.id,
+                lease_seconds=config.notifications.claim_lease_seconds,
+                max_attempts=config.notifications.max_attempts,
+            )
+            if claim is NotificationClaimResult.EXHAUSTED:
+                errors += 1
+                LOG.error("Notification retry limit exhausted for job %s", stored.id)
+                continue
+            if claim is not NotificationClaimResult.CLAIMED:
                 continue
             try:
                 sent += asyncio.run(send_jobs(config.telegram.bot_token, config.telegram.chat_id, [job]))

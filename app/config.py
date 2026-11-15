@@ -39,6 +39,11 @@ class TelegramConfig(StrictModel):
     enabled: bool = False
 
 
+class NotificationConfig(StrictModel):
+    claim_lease_seconds: int = Field(default=900, ge=1, le=86400)
+    max_attempts: int = Field(default=3, ge=1, le=20)
+
+
 class AppConfig(StrictModel):
     database_url: str = "sqlite:///./applysense.db"
     company_registry_path: str = "data/company_registry.json"
@@ -46,6 +51,7 @@ class AppConfig(StrictModel):
     scout: ScoutConfig = Field(default_factory=ScoutConfig)
     filters: FilterConfig = Field(default_factory=FilterConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    notifications: NotificationConfig = Field(default_factory=NotificationConfig)
 
     @field_validator("log_level")
     @classmethod
@@ -82,6 +88,7 @@ def load_config(path: str | Path = "config/config.yaml", *, env_file: str | Path
     raw.setdefault("scout", {})
     raw.setdefault("filters", {})
     raw.setdefault("telegram", {})
+    raw.setdefault("notifications", {})
     for env, key in (("DATABASE_URL", "database_url"), ("LOG_LEVEL", "log_level")):
         if os.getenv(env) is not None:
             raw[key] = os.environ[env]
