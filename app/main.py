@@ -16,7 +16,6 @@ from app.filters.location_filter import matches_location, preferred_city_rank
 from app.filters.seniority_filter import matches_seniority
 from app.notifications.telegram import send_jobs, send_summary
 from app.scouts.greenhouse import GreenhouseScout
-from app.utils.hashing import secondary_job_hash, url_hash
 from app.utils.logger import configure_logging
 
 LOG = logging.getLogger(__name__)
@@ -143,22 +142,26 @@ def run(
         repo = JobRepository(session)
         run_record = repo.create_run()
         inserted = repo.add_many(jobs, baseline=baseline_mode)
-        stored_rows = repo.get_many_by_hashes(
-            url_hashes=(url_hash(job["canonical_url"]) for job in jobs),
-            secondary_keys=(secondary_job_hash(job["company"], job["title"], job.get("location", "")) for job in jobs),
-        )
-        stored_by_url = {row.url_hash: row for row in stored_rows}
-        stored_by_secondary = {row.secondary_key: row for row in stored_rows}
-        candidates = []
-        resolved_ids: set[int] = set()
-        for job in jobs:
-            stored = stored_by_url.get(url_hash(job["canonical_url"])) or stored_by_secondary.get(
-                secondary_job_hash(job["company"], job["title"], job.get("location", "")))
-            if stored is not None and not stored.is_baseline and stored.id not in resolved_ids:
-                candidates.append((job, stored))
-                resolved_ids.add(stored.id)
+        candidates = [
+            ({
+                "source": stored.source,
+                "source_id": stored.source_id,
+                "company": stored.company,
+                "title": stored.title,
+                "location": stored.location,
+                "employment_type": stored.employment_type,
+                "description": stored.description,
+                "canonical_url": stored.canonical_url,
+                "content_hash": stored.content_hash,
+                "experience_requirement": stored.experience_requirement,
+                "posted_at": stored.posted_at,
+                "discovered_at": stored.discovered_at,
+                "uncertainty_reasons": stored.uncertainty_reasons or [],
+            }, stored)
+            for stored in repo.unseen()
+        ]
         fresh = [job for job, stored in candidates if stored.notified_at is None]
-        LOG.info("Found %d matching new jobs (%d fetched, mode=%s)", len(fresh), len(jobs), mode)
+        LOG.info("Found %d unsent matching jobs (%d new this run, mode=%s)", len(fresh), inserted, mode)
         if baseline_mode:
             LOG.info("Baseline stored %d new jobs; notifications skipped", inserted)
             repo.finish_run(run_record, fetched=discovery_stats.get("fetched", len(jobs)),

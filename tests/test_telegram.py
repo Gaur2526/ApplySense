@@ -4,6 +4,7 @@ import re
 from datetime import datetime
 
 import httpx
+import logging
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -13,9 +14,10 @@ from app.config import AppConfig, NotificationConfig, TelegramConfig
 from app.database.connection import initialize_database
 from app.database.models import Job, Notification
 from app.notifications.formatting import format_job
+from app.utils.logger import configure_logging
 
 
-TOKEN = "123456:TEST_SECRET_TOKEN"
+TOKEN = "123456789:" + "A" * 40
 CHAT = "test-chat"
 
 
@@ -49,12 +51,12 @@ def success(request):
 def test_format_job_escapes_external_fields_and_uses_safe_anchor():
     message = format_job(job(
         title='A & <B> > "quoted"', company='Co & < > "', location='Remote <India> & "Anywhere"',
-        canonical_url='https://jobs.example/a?x=1&y="two"<three>', uncertainty_reasons=["unknown"],
+        canonical_url='https://jobs.example/a path?x=1&y="two"<three>', uncertainty_reasons=["unknown"],
     ))
     assert "A &amp; &lt;B&gt; &gt; &quot;quoted&quot;" in message
     assert "Co &amp; &lt; &gt; &quot;" in message
     assert "Location: Remote &lt;India&gt; &amp; &quot;Anywhere&quot;" in message
-    assert 'href="https://jobs.example/a?x=1&amp;y=&quot;two&quot;&lt;three&gt;"' in message
+    assert 'href="https://jobs.example/a%20path?x=1&amp;y=%22two%22%3Cthree%3E"' in message
     assert "Check requirements: some role details are uncertain." in message
 
 
@@ -157,6 +159,7 @@ def test_cap_orders_priority_and_sends_queued_summary_then_remaining_job_next_ru
         assert len(list(session.scalars(select(Notification)))) == 4
         older = session.scalar(select(Job).where(Job.source_id == "old"))
         assert older is not None and older.notified_at is None
+    jobs.clear()  # the scout no longer returns the queued job
     assert main.run(config, notify=True) == 1
     assert any("Older Mumbai" in item["text"] for item in requests[5:])
     engine.dispose()
@@ -218,9 +221,25 @@ def test_dry_run_never_sends_or_writes_notification_rows(tmp_path, monkeypatch):
 
 def test_bot_token_never_appears_in_logs(caplog, monkeypatch):
     def handler(request):
-        return httpx.Response(500, json={"ok": False}, request=request)
+        raise httpx.ConnectError(f"request failed: {request.url}", request=request)
 
     install_transport(monkeypatch, handler)
     asyncio.run(telegram.send_jobs(TOKEN, CHAT, [job()]))
     assert TOKEN not in caplog.text
     assert f"/bot{TOKEN}/" not in caplog.text
+
+
+def test_logging_filter_redacts_tokens_from_messages_and_tracebacks(caplog):
+    configure_logging("INFO")
+    logger = logging.getLogger("telegram.test.redaction")
+    request_url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    api_key_fixture = "sk_live_" + "B" * 40
+    logger.error("httpx failure URL=%s key=%s", request_url, api_key_fixture)
+    try:
+        raise RuntimeError(f"request traceback contains {request_url}")
+    except RuntimeError:
+        logger.exception("Telegram request failed")
+    assert TOKEN not in caplog.text
+    assert api_key_fixture not in caplog.text
+    assert "[REDACTED_TELEGRAM_TOKEN]" in caplog.text
+    assert "[REDACTED_API_KEY]" in caplog.text

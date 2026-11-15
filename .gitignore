@@ -12,3 +12,10 @@ resume.md
 drafts/
 logs/
 .DS_Store
+
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal

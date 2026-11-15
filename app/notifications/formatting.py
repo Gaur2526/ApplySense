@@ -1,5 +1,6 @@
 import html
 import re
+from urllib.parse import quote
 
 
 HTML_TOKEN = re.compile(r"(<[^>]*>|&(?:#[0-9]+|#x[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]+);)")
@@ -78,7 +79,7 @@ def format_job(job: dict, *, limit: int = 4096) -> str:
     title = html.escape(str(job.get("title") or "Untitled"), quote=True)
     company = html.escape(str(job.get("company") or ""), quote=True)
     location = html.escape(str(job.get("location") or "Unspecified"), quote=True)
-    url = html.escape(str(job.get("canonical_url") or ""), quote=True)
+    url = html.escape(quote(str(job.get("canonical_url") or ""), safe=":/?#[]@!$&'()*+,;=%"), quote=True)
     lines = [f"<b>{title} — {company}</b>", f"Location: {location}"]
     if job.get("uncertainty_reasons"):
         lines.append("Check requirements: some role details are uncertain.")
