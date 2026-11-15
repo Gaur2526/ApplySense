@@ -32,6 +32,7 @@ def format_filter_diagnostics(jobs: list[dict], config: AppConfig) -> str:
 
     lines = [
         f"Dry-run filter diagnostic: {len(jobs)} fetched jobs",
+        f"Unknown location policy: {config.filters.unknown_location_policy}",
         "Text fields: keyword=title; excluded keyword=title; seniority=title; location=location; experience=experience_requirement/description; employment=employment_type/title",
         "",
         "Filter decision counts:",

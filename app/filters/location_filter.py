@@ -32,10 +32,15 @@ CITY_ALIAS_GROUPS = (
 )
 
 
-def matches_location(job: dict[str, Any]) -> FilterDecision:
+def matches_location(job: dict[str, Any], unknown_location_policy: str = "strict") -> FilterDecision:
     location = str(job.get("location") or "").strip()
     if not location or UNKNOWN_LOCATION.fullmatch(location):
         return uncertain("Location is not stated.")
+
+    if unknown_location_policy == "strict" and re.fullmatch(
+        r"(?:remote|anywhere|multiple locations)", location, re.I
+    ):
+        return uncertain("Location does not state a region or specific eligible location.")
 
     is_remote = bool(REMOTE.search(location))
     india_compatible = bool(INDIA.search(location) or INDIA_COMPATIBLE_REGION.search(location))
@@ -53,6 +58,8 @@ def matches_location(job: dict[str, Any]) -> FilterDecision:
         return passed("Role is located in India.")
     if restricted_elsewhere:
         return rejected("Role is located outside India and is not remote-compatible.")
+    if unknown_location_policy == "strict":
+        return rejected("Location is unrecognized under the strict unknown-location policy.")
     return uncertain("Location does not establish India eligibility.")
 
 

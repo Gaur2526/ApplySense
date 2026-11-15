@@ -146,7 +146,7 @@ def test_location_remote_eligibility_and_unknown_cases():
     assert matches_location({"location": "Remote - EMEA"}).status is FilterStatus.REJECT
     assert matches_location({"location": "Remote - APAC"}).status is FilterStatus.PASS
     assert matches_location({"location": "Remote (India)"}).status is FilterStatus.PASS
-    assert matches_location({"location": "Anywhere"}).status is FilterStatus.PASS
+    assert matches_location({"location": "Anywhere"}).status is FilterStatus.UNCERTAIN
     assert matches_location({"location": "Bengaluru, India"}).status is FilterStatus.PASS
     assert matches_location({"location": "London, UK"}).status is FilterStatus.REJECT
     assert matches_location({"location": "Seattle"}).status is FilterStatus.REJECT
@@ -161,6 +161,19 @@ def test_preferred_city_only_affects_ordering():
     assert preferred_city_rank({"location": "Pune, India"}, preferred) == 1
     assert preferred_city_rank({"location": "Remote - India"}, preferred) == 2
     assert matches_location({"location": "Remote - India"}).status is FilterStatus.PASS
+
+
+def test_unknown_location_policy_strict_and_allow_cases():
+    assert AppConfig(filters={"keywords": ["engineer"]}).filters.unknown_location_policy == "strict"
+    assert matches_location({"location": "Dublin"}, "allow").status is FilterStatus.UNCERTAIN
+    assert matches_location({"location": "Dublin"}, "strict").status is FilterStatus.REJECT
+    assert matches_location({"location": "Kochi"}, "strict").status is FilterStatus.PASS
+    assert matches_location({"location": ""}, "strict").status is FilterStatus.UNCERTAIN
+    assert matches_location({"location": "Remote"}, "strict").status is FilterStatus.UNCERTAIN
+    assert matches_location({"location": "Remote"}, "allow").status is FilterStatus.PASS
+    assert matches_location({"location": "Multiple locations"}, "strict").status is FilterStatus.UNCERTAIN
+    assert matches_location({"location": "Anywhere"}, "strict").status is FilterStatus.UNCERTAIN
+    assert matches_location({"location": "Remote - India"}, "strict").status is FilterStatus.PASS
 
 
 def test_city_aliases_share_filter_eligibility_and_preferred_order_rank():

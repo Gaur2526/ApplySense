@@ -19,9 +19,14 @@ from app.utils.logger import configure_logging
 LOG = logging.getLogger(__name__)
 
 
-def _notification_priority(job: dict, preferred_cities: list[str]) -> tuple[int, int, float]:
+def _notification_priority(
+    job: dict, preferred_cities: list[str], unknown_location_policy: str = "strict"
+) -> tuple[int, int, float]:
     location = str(job.get("location") or "")
-    is_remote_india_compatible = "remote" in location.casefold() and matches_location(job).status is FilterStatus.PASS
+    is_remote_india_compatible = (
+        "remote" in location.casefold()
+        and matches_location(job, unknown_location_policy).status is FilterStatus.PASS
+    )
     if is_remote_india_compatible:
         category, city_rank = 0, 0
     else:
@@ -170,7 +175,11 @@ def run(
             return inserted
         notify_jobs = fresh if mode == "discovery" else [job for job in fresh if not job["uncertainty_reasons"]]
         preferred_cities = list(dict.fromkeys([*config.filters.preferred_cities, *config.filters.locations]))
-        notify_jobs.sort(key=lambda job: _notification_priority(job, preferred_cities))
+        notify_jobs.sort(
+            key=lambda job: _notification_priority(
+                job, preferred_cities, config.filters.unknown_location_policy
+            )
+        )
         if mode == "qualified":
             LOG.info("%d uncertain jobs remain stored for the later matcher", len(fresh) - len(notify_jobs))
         if not notify or not config.telegram.enabled:
@@ -184,6 +193,8 @@ def run(
             engine.dispose()
             return len(notify_jobs)
         config.require_telegram()
+        bot_token = config.telegram.bot_token.get_secret_value()
+        chat_id = config.telegram.chat_id
         sent = 0
         errors = discovery_stats.get("errors", 0)
         permanently_failed = 0
@@ -228,7 +239,7 @@ def run(
                 continue
             claimed.append((job, stored.id))
         if claimed:
-            results = asyncio.run(send_jobs(config.telegram.bot_token, config.telegram.chat_id,
+            results = asyncio.run(send_jobs(bot_token, chat_id,
                                             [job for job, _job_id in claimed]))
             for (_job, job_id), confirmed in zip(claimed, results):
                 if confirmed:
@@ -239,7 +250,7 @@ def run(
                     repo.mark_notification_failed(job_id, "Telegram did not confirm the message")
         if queued_count:
             summary = f"{queued_count} more new jobs queued for the next run"
-            if not asyncio.run(send_summary(config.telegram.bot_token, config.telegram.chat_id, summary)):
+            if not asyncio.run(send_summary(bot_token, chat_id, summary)):
                 errors += 1
                 LOG.warning("Telegram did not confirm the queued-jobs summary")
         repo.finish_run(run_record, fetched=discovery_stats.get("fetched", len(jobs)),

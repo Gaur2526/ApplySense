@@ -72,6 +72,7 @@ def test_explain_reports_filter_counts_reasons_first_reject_and_all_india_jobs(
     assert main.run(config, dry_run=True, explain=True, notify=True) == 4
     output = capsys.readouterr().out
     assert "Dry-run filter diagnostic: 4 fetched jobs" in output
+    assert "Unknown location policy: strict" in output
     assert "Text fields: keyword=title; excluded keyword=title;" in output
     assert "keyword: PASS=2 UNCERTAIN=0 REJECT=2" in output
     assert "excluded keyword: PASS=4 UNCERTAIN=0 REJECT=0" in output

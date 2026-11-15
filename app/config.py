@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, field_validator
 
 
 class StrictModel(BaseModel):
@@ -29,6 +29,7 @@ class FilterConfig(StrictModel):
     ])
     locations: list[str] = Field(default_factory=list)
     preferred_cities: list[str] = Field(default_factory=list)
+    unknown_location_policy: Literal["allow", "strict"] = "strict"
     max_min_years: int = Field(default=2, ge=0, le=50)
     employment_types: list[str] = Field(default_factory=lambda: ["full-time"])
 
@@ -41,7 +42,7 @@ class FilterConfig(StrictModel):
 
 
 class TelegramConfig(StrictModel):
-    bot_token: str | None = None
+    bot_token: SecretStr | None = None
     chat_id: str | None = None
     enabled: bool = False
 

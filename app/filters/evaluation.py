@@ -24,7 +24,7 @@ def evaluate_filter_decisions(
     excluded = matches_keywords(job, [], filters.excluded_keywords)
     seniority = matches_seniority(job, filters.seniority_titles)
     experience = matches_experience(job, filters.max_min_years)
-    location = matches_location(job)
+    location = matches_location(job, filters.unknown_location_policy)
     employment = matches_employment(job, filters.employment_types)
     individual = {
         "keyword": keyword,

@@ -45,7 +45,7 @@ filters:
   employment_types: [full-time]
 
 telegram:
-  enabled: false
+  enabled: true
   # Set credentials in .env; notifications remain disabled until explicitly enabled.
 
 notifications:
