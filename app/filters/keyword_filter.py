@@ -16,14 +16,16 @@ def _matches_term(text: str, term: str) -> bool:
 
 
 def matches_keywords(job: dict, include: list[str], exclude: list[str] | None = None) -> FilterDecision:
-    text = _normalize(" ".join(str(job.get(k, "")) for k in ("title", "description", "company")))
-    if not text.strip():
-        return uncertain("Job text is missing.")
+    title = str(job.get("title") or "")
+    text = _normalize(title)
+    if not text:
+        return uncertain("Job title is missing.")
     for term in exclude or []:
         if _matches_term(text, term):
-            return rejected(f"Excluded keyword found: {term}.")
+            return rejected(f'Title "{title}" matched excluded keyword "{term}".')
     if not include:
         return passed("No required include keywords are configured.")
-    if any(_matches_term(text, term) for term in include):
-        return passed("At least one configured include keyword matched.")
+    for term in include:
+        if _matches_term(text, term):
+            return passed(f'Title "{title}" matched include keyword "{term}".')
     return rejected("No configured include keyword matched.")

@@ -17,7 +17,7 @@ def test_run_cli_passes_mode_baseline_dry_run_and_limit(monkeypatch):
     ]) == 0
     assert captured == {
         "mode": "qualified", "baseline_mode": True, "dry_run": True,
-        "notify": False, "limit": 7,
+        "notify": False, "limit": 7, "explain": False,
     }
 
 
@@ -88,3 +88,19 @@ def test_validate_config_rejects_missing_or_empty_keywords(tmp_path, capsys, yam
     config.write_text(yaml_text, encoding="utf-8")
     assert cli.main(["--config", str(config), "validate-config"]) == 2
     assert "Configuration invalid" in capsys.readouterr().out
+
+
+def test_run_cli_passes_explain_flag_only_with_dry_run(monkeypatch):
+    config = AppConfig()
+    captured = {}
+    monkeypatch.setattr(cli, "load_config", lambda _path: config)
+    monkeypatch.setattr(cli, "configure_logging", lambda _level: None)
+    monkeypatch.setattr(cli, "run", lambda _config, **kwargs: captured.update(kwargs))
+    assert cli.main(["run", "--dry-run", "--explain"]) == 0
+    assert captured["dry_run"] is True
+    assert captured["explain"] is True
+
+
+def test_run_cli_rejects_explain_without_dry_run():
+    with pytest.raises(SystemExit):
+        cli.main(["run", "--explain"])

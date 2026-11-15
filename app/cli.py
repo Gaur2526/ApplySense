@@ -34,6 +34,7 @@ def parser() -> argparse.ArgumentParser:
     execute.add_argument("--mode", choices=("discovery", "qualified"), default="discovery")
     execute.add_argument("--baseline", action="store_true", help="Store fetched jobs as a baseline; skip notifications")
     execute.add_argument("--dry-run", action="store_true", help="Fetch and report without writes or notifications")
+    execute.add_argument("--explain", action="store_true", help="With --dry-run, report every filter decision")
     execute.add_argument("--notify", action="store_true", help="Send Telegram notifications if enabled in configuration")
     execute.add_argument("--limit", type=positive_int, help="Maximum matching jobs to process")
     check = commands.add_parser("check-company", help="Check a Greenhouse public board without database writes")
@@ -61,6 +62,8 @@ async def check_greenhouse_company(identifier: str, config) -> tuple[bool, list[
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    if args.command == "run" and args.explain and not args.dry_run:
+        parser().error("--explain requires --dry-run")
     try:
         config = load_config(args.config)
     except Exception as exc:
@@ -93,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
             notify=args.notify,
             limit=args.limit,
+            explain=args.explain,
         )
     elif args.command == "status":
         engine = make_engine(config.database_url)

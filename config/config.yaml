@@ -30,9 +30,9 @@ filters:
     - genai
     - machine learning engineer
     - associate software engineer
+    - forward deployed engineer
+
   excluded_keywords:
-    - intern
-    - internship
     - sales
     - account
     - marketing
@@ -40,7 +40,7 @@ filters:
     - support
   seniority_titles: [senior, sr, lead, staff, principal, manager, head, architect, director, vp, "vice president", chief, distinguished, fellow, executive]
   locations: []
-  preferred_cities: [Noida, Gurgaon, Gurugram, Delhi, Bengaluru, Bangalore, Hyderabad, Pune]
+  preferred_cities: [Noida, Gurgaon, Gurugram, Delhi, Bengaluru, Bangalore, Hyderabad, Pune, Mumbai]
   max_min_years: 2
   employment_types: [full-time]
 

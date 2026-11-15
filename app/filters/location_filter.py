@@ -7,8 +7,13 @@ REMOTE = re.compile(r"\b(?:remote|work from home|work-from-home|anywhere|worldwi
 UNRESTRICTED = re.compile(r"\b(?:anywhere|worldwide|global|location[- ]flexible|no location restriction)\b", re.I)
 UNKNOWN_LOCATION = re.compile(r"^(?:unknown|unspecified|not specified|n/?a|tbd)$", re.I)
 INDIA = re.compile(
-    r"\b(?:india|indian|bengaluru|bangalore|hyderabad|mumbai|pune|chennai|"
-    r"new delhi|delhi|noida|gurgaon|gurugram|kolkata|ahmedabad|kochi|jaipur|indore)\b",
+    r"\b(?:india|indian|bengaluru|bangalore|hyderabad|navi mumbai|mumbai|pune|chennai|"
+    r"new delhi|greater noida|delhi|noida|gurgaon|gurugram|kolkata|ahmedabad|kochi|jaipur|indore|"
+    r"agra|ajmer|amritsar|bareilly|bhopal|bhubaneswar|chandigarh|coimbatore|dehradun|"
+    r"dhanbad|faridabad|ghaziabad|gwalior|guwahati|jabalpur|jodhpur|kanpur|kozhikode|"
+    r"lucknow|ludhiana|madurai|mangaluru|mangalore|meerut|mysuru|nagpur|nashik|patna|"
+    r"prayagraj|raipur|rajkot|ranchi|srinagar|surat|thiruvananthapuram|tiruchirappalli|"
+    r"udaipur|vadodara|varanasi|vijayawada|visakhapatnam|warangal)\b",
     re.I,
 )
 INDIA_COMPATIBLE_REGION = re.compile(r"\b(?:apac|asia(?:[- ]pacific)?)\b", re.I)
@@ -49,6 +54,19 @@ def matches_location(job: dict[str, Any]) -> FilterDecision:
     if restricted_elsewhere:
         return rejected("Role is located outside India and is not remote-compatible.")
     return uncertain("Location does not establish India eligibility.")
+
+
+def is_india_location(job: dict[str, Any], additional_cities: list[str] | None = None) -> bool:
+    """Identify India country mentions and Indian city names for diagnostics."""
+    location = str(job.get("location") or "").strip()
+    if INDIA.search(location):
+        return True
+    for city in additional_cities or []:
+        normalized_city = re.sub(r"\s+", " ", city).strip().casefold()
+        aliases = next((group for group in CITY_ALIAS_GROUPS if normalized_city in group), {normalized_city})
+        if any(re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", location, re.I) for alias in aliases):
+            return True
+    return False
 
 
 def preferred_city_rank(job: dict[str, Any], preferred_cities: list[str]) -> int:

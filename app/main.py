@@ -9,11 +9,9 @@ from app.companies.registry import load_registry, verified_greenhouse_entries
 from app.database.connection import initialize_database, make_engine, make_session_factory
 from app.database.repository import JobRepository, NotificationClaimResult
 from app.filters.decision import FilterStatus
-from app.filters.employment_filter import matches_employment
-from app.filters.experience_filter import matches_experience, parse_experience_requirement
-from app.filters.keyword_filter import matches_keywords
+from app.filters.evaluation import evaluate_filter_decisions
 from app.filters.location_filter import matches_location, preferred_city_rank
-from app.filters.seniority_filter import matches_seniority
+from app.diagnostics import format_filter_diagnostics
 from app.notifications.telegram import send_jobs, send_summary
 from app.scouts.greenhouse import GreenhouseScout
 from app.utils.logger import configure_logging
@@ -52,17 +50,8 @@ def filter_jobs(jobs: list[dict], config: AppConfig) -> list[dict]:
     selected: list[dict] = []
     preferred_cities = list(dict.fromkeys([*filters.preferred_cities, *filters.locations]))
     for job in jobs:
-        if job.get("experience_requirement") is None:
-            job["experience_requirement"] = parse_experience_requirement(
-                f"{job.get('title', '')} {job.get('description', '')}"
-            )
-        decisions = [
-            matches_keywords(job, filters.keywords, filters.excluded_keywords),
-            matches_seniority(job, filters.seniority_titles),
-            matches_experience(job, filters.max_min_years),
-            matches_location(job),
-            matches_employment(job, filters.employment_types),
-        ]
+        _individual, pipeline, _first_rejection = evaluate_filter_decisions(job, config)
+        decisions = list(pipeline.values())
         if any(decision.status is FilterStatus.REJECT for decision in decisions):
             continue
         job["uncertainty_reasons"] = [
@@ -75,7 +64,7 @@ def filter_jobs(jobs: list[dict], config: AppConfig) -> list[dict]:
     return sorted(selected, key=lambda job: preferred_city_rank(job, preferred_cities))
 
 
-async def discover(config: AppConfig, *, stats: dict | None = None) -> list[dict]:
+async def discover(config: AppConfig, *, stats: dict | None = None, include_rejected: bool = False) -> list[dict]:
     companies = verified_greenhouse_entries(load_registry(config.company_registry_path))
     if not companies:
         LOG.info("No verified Greenhouse companies with board identifiers are configured")
@@ -101,7 +90,8 @@ async def discover(config: AppConfig, *, stats: dict | None = None) -> list[dict
         filtered = filter_jobs(jobs, config)
         if stats is not None:
             stats["filtered"] = len(filtered)
-        for job in filtered:
+        selected = jobs if include_rejected else filtered
+        for job in selected:
             unique.setdefault(job["canonical_url"], job)
         return list(unique.values())
     finally:
@@ -120,16 +110,25 @@ def run(
     dry_run: bool = False,
     notify: bool = False,
     limit: int | None = None,
+    explain: bool = False,
 ) -> int:
     if mode not in {"discovery", "qualified"}:
         raise ValueError("mode must be discovery or qualified")
     if limit is not None and limit < 0:
         raise ValueError("limit must not be negative")
+    if explain and not dry_run:
+        raise ValueError("--explain requires --dry-run")
     discovery_stats: dict[str, int] = {"errors": 0}
-    jobs = asyncio.run(discover(config, stats=discovery_stats))
+    if explain:
+        jobs = asyncio.run(discover(config, stats=discovery_stats, include_rejected=True))
+    else:
+        jobs = asyncio.run(discover(config, stats=discovery_stats))
     if limit is not None:
         jobs = jobs[:limit]
     if dry_run:
+        if explain:
+            print(format_filter_diagnostics(jobs, config))
+            return len(jobs)
         LOG.info("Dry-run: %d unique matching jobs fetched; database and Telegram are untouched", len(jobs))
         for job in jobs:
             LOG.info("Job: %s | %s | %s", job["title"], job["company"], job["canonical_url"])

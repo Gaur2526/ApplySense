@@ -2,7 +2,7 @@ from app.filters.decision import FilterStatus
 from app.filters.employment_filter import matches_employment
 from app.filters.experience_filter import matches_experience, parse_experience_requirement
 from app.filters.keyword_filter import matches_keywords
-from app.filters.location_filter import matches_location, preferred_city_rank
+from app.filters.location_filter import is_india_location, matches_location, preferred_city_rank
 from app.filters.seniority_filter import matches_seniority
 from app.config import AppConfig
 from app.database.connection import initialize_database, make_engine, make_session_factory
@@ -21,9 +21,9 @@ JOB = {
 
 
 def test_keyword_filter_returns_tri_state_decisions():
-    assert matches_keywords(JOB, ["python"]).status is FilterStatus.PASS
+    assert matches_keywords(JOB, ["software engineer"]).status is FilterStatus.PASS
     assert matches_keywords(JOB, ["designer"]).status is FilterStatus.REJECT
-    assert matches_keywords(JOB, ["python"], ["acme"]).status is FilterStatus.REJECT
+    assert matches_keywords(JOB, ["software engineer"], ["acme"]).status is FilterStatus.PASS
     assert matches_keywords({}, ["python"]).status is FilterStatus.UNCERTAIN
     assert matches_keywords(JOB, []).reason
 
@@ -35,6 +35,33 @@ def test_keyword_terms_use_word_boundaries_and_support_phrases():
     assert matches_keywords({**JOB, "title": "Fullstack Engineer"}, ["full stack"]).status is FilterStatus.REJECT
     assert matches_keywords({**JOB, "title": "Full\nStack Engineer"}, ["full stack"]).status is FilterStatus.PASS
     assert matches_keywords({**JOB, "title": "Internal Tools Engineer"}, ["intern"]).status is FilterStatus.REJECT
+
+
+def test_keyword_filters_read_title_only_for_realistic_cases():
+    software_engineer = {
+        **JOB,
+        "title": "Software Engineer 3",
+        "description": "Our sales team works with every recruiter.",
+    }
+    assert matches_keywords(
+        software_engineer, ["software engineer"], ["sales", "recruiter"]
+    ).status is FilterStatus.PASS
+
+    hr_role = {
+        **JOB,
+        "title": "Associate, HR Shared Services",
+        "description": "We are seeking a software engineer for our team.",
+    }
+    assert matches_keywords(hr_role, ["software engineer"]).status is FilterStatus.REJECT
+
+    assert matches_keywords(
+        {**JOB, "title": "Account Development Representative"},
+        ["representative"], ["account development"],
+    ).status is FilterStatus.REJECT
+    assert matches_keywords(
+        {**JOB, "title": "Early Talent Recruiter"},
+        ["early talent"], ["recruiter"],
+    ).status is FilterStatus.REJECT
 
 
 def test_experience_parses_required_patterns_and_ranges():
@@ -93,6 +120,14 @@ def test_experience_required_range_and_plus_edge_cases():
     assert matches_experience({"description": "No experience requirement stated"}).status is FilterStatus.UNCERTAIN
 
 
+def test_numeral_level_in_job_title_is_not_an_experience_requirement():
+    job = {"title": "Software Engineer 3", "description": "Build backend software."}
+    assert parse_experience_requirement(f"{job['title']} {job['description']}") is None
+    decision = matches_experience(job)
+    assert decision.status is FilterStatus.UNCERTAIN
+    assert decision.reason == "Minimum experience requirement is not stated unambiguously."
+
+
 def test_real_description_experience_regressions():
     assert matches_experience({"description": "Years of Experience:1 to 3 years"}).status is FilterStatus.PASS
     assert matches_experience({"description": "Years of Experience:0 to 1 years"}).status is FilterStatus.PASS
@@ -137,6 +172,24 @@ def test_city_aliases_share_filter_eligibility_and_preferred_order_rank():
     assert preferred_city_rank({"location": "Gurgaon, India"}, ["Gurugram"]) == 0
     assert preferred_city_rank({"location": "Bangalore, India"}, ["Bengaluru"]) == 0
     assert preferred_city_rank({"location": "Bengaluru, India"}, ["Bangalore"]) == 0
+    assert is_india_location({"location": "Lucknow"})
+    assert matches_location({"location": "Lucknow"}).status is FilterStatus.PASS
+
+
+def test_requested_bare_indian_cities_are_india_eligible_and_rankable():
+    cities = [
+        "Mumbai", "Chennai", "Kolkata", "Ahmedabad", "Kochi", "Chandigarh", "Jaipur",
+        "Indore", "Coimbatore", "Thiruvananthapuram", "Navi Mumbai", "Greater Noida",
+        "Ghaziabad", "Faridabad",
+    ]
+    for city in cities:
+        job = {"location": city}
+        assert matches_location(job).status is FilterStatus.PASS, city
+        assert is_india_location(job), city
+        assert preferred_city_rank(job, [city]) == 0, city
+    india_wide = {"location": "India"}
+    assert matches_location(india_wide).status is FilterStatus.PASS
+    assert is_india_location(india_wide)
 
 
 def test_seniority_title_terms_are_whole_words():
