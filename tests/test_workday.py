@@ -15,6 +15,7 @@ import app.main as main
 import app.scouts.workday as workday
 from app.companies.registry import CompanyEntry, WorkdayTenantConfig
 from app.config import AppConfig
+from app.diagnostics import format_filter_diagnostics
 from app.database.connection import initialize_database
 from app.database.models import EvaluatedJob, Run, utc_now
 from app.database.models import Job, Notification
@@ -289,8 +290,56 @@ def test_india_state_prefix_passes_even_when_city_is_unrecognized_and_country_is
     assert decision.status is FilterStatus.PASS
 
 
-def test_workday_assumed_country_makes_generic_or_unrecognized_locations_uncertain():
-    assert matches_workday_location({"location": "2 Locations"}, "strict", "IN").status is FilterStatus.UNCERTAIN
+@pytest.mark.parametrize("location", ["2 Locations", "3 Locations"])
+@pytest.mark.parametrize("policy", ["strict", "allow"])
+def test_workday_assumed_country_makes_counted_locations_uncertain_for_both_policies(location, policy):
+    assert matches_workday_location(
+        {"source": "workday", "location": location}, policy, "IN"
+    ).status is FilterStatus.UNCERTAIN
+
+
+@pytest.mark.parametrize("policy", ["strict", "allow"])
+def test_workday_assumed_country_makes_multiple_locations_uncertain_for_both_policies(policy):
+    assert matches_workday_location(
+        {"source": "workday", "location": "Multiple Locations"}, policy, "IN"
+    ).status is FilterStatus.UNCERTAIN
+
+
+@pytest.mark.parametrize(
+    ("country_code", "expected"),
+    [("IN", FilterStatus.PASS), ("US", FilterStatus.REJECT)],
+)
+def test_workday_details_country_code_resolves_multiple_location_label(country_code, expected):
+    item = _list_job(list_item(req="R-COUNTRY", location="2 Locations"), "Walmart", tenant())
+    payload = detail_response(
+        "R-COUNTRY",
+        location="2 Locations",
+        jobRequisitionLocation={"country": {"alpha2Code": country_code}},
+    )
+    normalized = normalize_workday_job(item, payload, tenant())
+    assert normalized["_workday_location_country"] == country_code
+    assert matches_workday_location(normalized, "strict", "IN").status is expected
+
+
+def test_explain_keeps_workday_assumed_country_for_location_diagnostics():
+    cfg = config(unknown_location_policy="strict")
+    item = {
+        "source": "workday", "source_id": "walmart/R-MULTI", "company": "Walmart",
+        "title": "Software Engineer", "location": "2 Locations",
+        "employment_type": "full-time", "description": "Requirements: 1 year of experience",
+        "canonical_url": "https://jobs.example.test/R-MULTI", "content_hash": "7" * 64,
+        "experience_requirement": 1, "posted_at": None, "_workday_assume_country": "IN",
+    }
+    prepared = main.filter_jobs([item], cfg, preserve_workday_context=True)
+    assert prepared[0]["_workday_assume_country"] == "IN"
+    report = format_filter_diagnostics(
+        prepared, cfg, run_time=datetime(2026, 11, 16, 12, tzinfo=timezone.utc)
+    )
+    assert "location: PASS=0 UNCERTAIN=1 REJECT=0" in report
+    assert "Unrecognized locations (top 25):\n  None" in report
+
+
+def test_workday_assumed_country_makes_generic_unrecognized_locations_uncertain():
     assert matches_workday_location({"location": "Bentonville"}, "strict", "IN").status is FilterStatus.UNCERTAIN
     assert matches_workday_location({"location": "Dublin"}, "strict", "IN").status is FilterStatus.UNCERTAIN
 

@@ -32,6 +32,7 @@ CITY_ALIAS_GROUPS = (
 )
 WORKDAY_LOCATION_PREFIX = re.compile(r"^(?P<country>[A-Z]{2})\s+(?P<state>[A-Z]{2})\b", re.I)
 MULTIPLE_LOCATIONS = re.compile(r"^\d+\s+locations?$", re.I)
+WORKDAY_MULTIPLE_LOCATIONS = re.compile(r"^(?:\d+\s+locations?|multiple\s+locations)$", re.I)
 
 
 def matches_location(job: dict[str, Any], unknown_location_policy: str = "strict") -> FilterDecision:
@@ -70,7 +71,12 @@ def matches_workday_location(
 ) -> FilterDecision:
     location = str(job.get("location") or "").strip()
     assumed = str(assume_country or "").strip()
-    if assumed and MULTIPLE_LOCATIONS.fullmatch(location):
+    detail_country = str(job.get("_workday_location_country") or "").strip().upper()
+    if detail_country:
+        if detail_country == "IN":
+            return passed("Workday requisition location country is India.")
+        return rejected(f"Workday requisition location country is {detail_country}, outside India.")
+    if assumed and WORKDAY_MULTIPLE_LOCATIONS.fullmatch(location):
         return uncertain("Location lists multiple unspecified locations.")
     prefix = WORKDAY_LOCATION_PREFIX.match(location)
     if prefix:

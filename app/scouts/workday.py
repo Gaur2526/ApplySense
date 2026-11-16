@@ -248,6 +248,15 @@ def normalize_workday_job(
         location = str(location_value.get("name") or list_job["location"] or "")
     else:
         location = str(location_value or list_job["location"] or "")
+    requisition_location = info.get("jobRequisitionLocation")
+    country_data = (
+        requisition_location.get("country")
+        if isinstance(requisition_location, dict)
+        else None
+    )
+    country_code = country_data.get("alpha2Code") if isinstance(country_data, dict) else None
+    if not isinstance(country_code, str) or not re.fullmatch(r"[A-Za-z]{2}", country_code.strip()):
+        country_code = None
     external_url = info.get("externalUrl")
     if not isinstance(external_url, str) or not external_url.strip():
         external_url = f"https://{tenant.host}/{tenant.site}{list_job['external_path']}"
@@ -274,6 +283,8 @@ def normalize_workday_job(
     }
     job = JobSchema.model_validate(normalized).to_orm_dict()
     job["_workday_assume_country"] = tenant.assume_country
+    if country_code is not None:
+        job["_workday_location_country"] = country_code.strip().upper()
     if start_date is None and list_job.get("_age_unknown_is_uncertain"):
         job["_age_unknown_is_uncertain"] = True
     return job

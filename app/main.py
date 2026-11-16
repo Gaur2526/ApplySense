@@ -60,7 +60,9 @@ def _notification_priority(
     return category, city_rank, -newest
 
 
-def filter_jobs(jobs: list[dict], config: AppConfig) -> list[dict]:
+def filter_jobs(
+    jobs: list[dict], config: AppConfig, *, preserve_workday_context: bool = False
+) -> list[dict]:
     filters = config.filters
     selected: list[dict] = []
     preferred_cities = list(dict.fromkeys([*filters.preferred_cities, *filters.locations]))
@@ -82,7 +84,9 @@ def filter_jobs(jobs: list[dict], config: AppConfig) -> list[dict]:
         ]
         if job.get("experience_requirement") is None:
             job["experience_requirement"] = None
-        job.pop("_workday_assume_country", None)
+        if not preserve_workday_context:
+            job.pop("_workday_assume_country", None)
+            job.pop("_workday_location_country", None)
         selected.append(job)
     return sorted(selected, key=lambda job: preferred_city_rank(job, preferred_cities))
 
@@ -291,7 +295,9 @@ async def discover(
         # A role can appear under multiple boards; canonical URLs are the source
         # of identity for both in-memory dry runs and persisted discovery.
         unique: dict[str, dict] = {}
-        filtered = filter_jobs(jobs, config)
+        filtered = filter_jobs(
+            jobs, config, preserve_workday_context=include_rejected
+        )
         if stats is not None:
             stats["filtered"] = len(filtered)
         selected = jobs if include_rejected else filtered
