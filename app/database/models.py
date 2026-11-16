@@ -12,6 +12,15 @@ class Base(DeclarativeBase):
     pass
 
 
+class DatabaseMeta(Base):
+    """Small key/value table for database compatibility metadata."""
+
+    __tablename__ = "app_meta"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class Job(Base):
     __tablename__ = "jobs"
     __table_args__ = (

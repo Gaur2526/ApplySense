@@ -10,7 +10,9 @@ from app.companies.registry import (
     CompanyEntry, load_registry,
     verified_greenhouse_entries, verified_workday_entries,
 )
-from app.database.connection import initialize_database, make_engine, make_session_factory
+from app.database.connection import (
+    initialize_database, make_engine, make_session_factory, validate_database_version,
+)
 from app.database.models import utc_now
 from app.database.repository import JobRepository, NotificationClaimResult
 from app.filters.decision import FilterStatus
@@ -121,6 +123,12 @@ async def _discover_workday(
         engine = make_engine(config.database_url)
         if not dry_run:
             initialize_database(engine)
+        else:
+            try:
+                validate_database_version(engine)
+            except Exception:
+                engine.dispose()
+                raise
         factory = make_session_factory(engine)
     scout = WorkdayScout(
         timeout=config.scout.request_timeout_seconds,
@@ -316,8 +324,18 @@ def run(
         raise ValueError("limit must not be negative")
     if explain and not dry_run:
         raise ValueError("--explain requires --dry-run")
-    discovery_stats: dict[str, int] = {"errors": 0}
     workday_entries = verified_workday_entries(load_registry(config.company_registry_path))
+    if not dry_run or (workday_entries and _sqlite_database_exists(config.database_url)):
+        # Check or create the database before discovery makes any network calls.
+        startup_engine = make_engine(config.database_url)
+        try:
+            if dry_run:
+                validate_database_version(startup_engine)
+            else:
+                initialize_database(startup_engine)
+        finally:
+            startup_engine.dispose()
+    discovery_stats: dict[str, int] = {"errors": 0}
     if workday_entries:
         discover_kwargs = {
             "stats": discovery_stats,

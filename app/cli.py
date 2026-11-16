@@ -6,7 +6,9 @@ import httpx
 
 from app.config import load_config
 from app.companies.registry import load_registry
-from app.database.connection import initialize_database, make_engine, make_session_factory
+from app.database.connection import (
+    DatabaseVersionError, initialize_database, make_engine, make_session_factory,
+)
 from app.database.repository import JobRepository
 from app.main import baseline, run
 from app.scouts.greenhouse import GreenhouseScout
@@ -148,25 +150,31 @@ def main(argv: list[str] | None = None) -> int:
             print(f"canonical URL: {detail_job['canonical_url']}")
             print(f"minimum experience: {detail_job['experience_requirement']}")
         return 0
-    if args.command == "baseline":
-        baseline(config, dry_run=args.dry_run, limit=args.limit)
-    elif args.command == "run":
-        run(
-            config,
-            mode=args.mode,
-            baseline_mode=args.baseline,
-            dry_run=args.dry_run,
-            notify=args.notify,
-            limit=args.limit,
-            explain=args.explain,
-            force=args.force,
-        )
-    elif args.command == "status":
-        engine = make_engine(config.database_url)
-        initialize_database(engine)
-        with make_session_factory(engine)() as session:
-            print(f"Stored jobs: {JobRepository(session).count()}")
-        engine.dispose()
+    try:
+        if args.command == "baseline":
+            baseline(config, dry_run=args.dry_run, limit=args.limit)
+        elif args.command == "run":
+            run(
+                config,
+                mode=args.mode,
+                baseline_mode=args.baseline,
+                dry_run=args.dry_run,
+                notify=args.notify,
+                limit=args.limit,
+                explain=args.explain,
+                force=args.force,
+            )
+        elif args.command == "status":
+            engine = make_engine(config.database_url)
+            try:
+                initialize_database(engine)
+                with make_session_factory(engine)() as session:
+                    print(f"Stored jobs: {JobRepository(session).count()}")
+            finally:
+                engine.dispose()
+    except DatabaseVersionError as exc:
+        print(str(exc))
+        return 2
     return 0
 
 
