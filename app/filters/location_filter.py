@@ -1,7 +1,7 @@
 import re
 from typing import Any
 
-from app.filters.decision import FilterDecision, passed, rejected, uncertain
+from app.filters.decision import FilterDecision, FilterStatus, passed, rejected, uncertain
 
 REMOTE = re.compile(r"\b(?:remote|work from home|work-from-home|anywhere|worldwide|global)\b", re.I)
 UNRESTRICTED = re.compile(r"\b(?:anywhere|worldwide|global|location[- ]flexible|no location restriction)\b", re.I)
@@ -30,6 +30,8 @@ CITY_ALIAS_GROUPS = (
     frozenset({"gurgaon", "gurugram"}),
     frozenset({"bengaluru", "bangalore"}),
 )
+WORKDAY_LOCATION_PREFIX = re.compile(r"^(?P<country>[A-Z]{2})\s+(?P<state>[A-Z]{2})\b", re.I)
+MULTIPLE_LOCATIONS = re.compile(r"^\d+\s+locations?$", re.I)
 
 
 def matches_location(job: dict[str, Any], unknown_location_policy: str = "strict") -> FilterDecision:
@@ -61,6 +63,34 @@ def matches_location(job: dict[str, Any], unknown_location_policy: str = "strict
     if unknown_location_policy == "strict":
         return rejected("Location is unrecognized under the strict unknown-location policy.")
     return uncertain("Location does not establish India eligibility.")
+
+
+def matches_workday_location(
+    job: dict[str, Any], unknown_location_policy: str, assume_country: str | None
+) -> FilterDecision:
+    location = str(job.get("location") or "").strip()
+    assumed = str(assume_country or "").strip()
+    if assumed and MULTIPLE_LOCATIONS.fullmatch(location):
+        return uncertain("Location lists multiple unspecified locations.")
+    prefix = WORKDAY_LOCATION_PREFIX.match(location)
+    if prefix:
+        country = prefix.group("country").casefold()
+        assumed_code = assumed.casefold()
+        if country == "in" or (
+            assumed and (
+                country == assumed_code
+                or (assumed_code in {"india", "ind"} and country == "in")
+            )
+        ):
+            return passed("Workday location prefix identifies an eligible country and state.")
+    decision = matches_location(job, unknown_location_policy)
+    if (
+        assumed
+        and decision.status is FilterStatus.REJECT
+        and decision.reason == "Location is unrecognized under the strict unknown-location policy."
+    ):
+        return uncertain("Workday location is unrecognized; tenant country is assumed.")
+    return decision
 
 
 def is_india_location(job: dict[str, Any], additional_cities: list[str] | None = None) -> bool:

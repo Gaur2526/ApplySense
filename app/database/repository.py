@@ -1,12 +1,12 @@
 from collections.abc import Iterable
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 
-from sqlalchemy import select, tuple_, update
+from sqlalchemy import exists, select, tuple_, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from app.database.models import Job, Notification, Run, utc_now
+from app.database.models import EvaluatedJob, Job, Notification, Run, utc_now
 from app.utils.hashing import secondary_job_hash, url_hash
 
 
@@ -45,6 +45,79 @@ class JobRepository:
             for row in rows:
                 found[row.id] = row
         return list(found.values())
+
+    def known_source_ids(self, source: str, source_ids: Iterable[str]) -> set[str]:
+        ordered = list(set(source_ids))
+        known: set[str] = set()
+        for offset in range(0, len(ordered), 400):
+            known.update(self.session.scalars(select(Job.source_id).where(
+                Job.source == source, Job.source_id.in_(ordered[offset:offset + 400])
+            )))
+        return known
+
+    def job_source_ids_for_source(self, source: str) -> set[str]:
+        return set(self.session.scalars(select(Job.source_id).where(Job.source == source)))
+
+    def evaluated_source_ids_for_source(self, source: str) -> set[str]:
+        return set(self.session.scalars(
+            select(EvaluatedJob.source_id).where(EvaluatedJob.source == source)
+        ))
+
+    def recently_evaluated_source_ids(
+        self,
+        source: str,
+        source_ids: Iterable[str],
+        *,
+        reevaluate_after_days: int,
+        settings_hash: str | None = None,
+    ) -> set[str]:
+        ordered = list(set(source_ids))
+        cutoff = utc_now() - timedelta(days=reevaluate_after_days)
+        recent: set[str] = set()
+        for offset in range(0, len(ordered), 400):
+            conditions = [
+                EvaluatedJob.source == source,
+                EvaluatedJob.source_id.in_(ordered[offset:offset + 400]),
+                EvaluatedJob.evaluated_at >= cutoff,
+            ]
+            if settings_hash is not None:
+                conditions.append(EvaluatedJob.settings_hash == settings_hash)
+            recent.update(self.session.scalars(
+                select(EvaluatedJob.source_id).where(*conditions)
+            ))
+        return recent
+
+    def evaluation_settings_hashes(self, source: str) -> dict[str, str]:
+        return {
+            source_id: settings_hash
+            for source_id, settings_hash in self.session.execute(
+                select(EvaluatedJob.source_id, EvaluatedJob.settings_hash)
+                .where(EvaluatedJob.source == source)
+            )
+        }
+
+    def record_evaluations(self, evaluations: Iterable[dict]) -> None:
+        for item in evaluations:
+            row = self.session.scalar(select(EvaluatedJob).where(
+                EvaluatedJob.source == item["source"],
+                EvaluatedJob.source_id == item["source_id"],
+            ))
+            if row is None:
+                row = EvaluatedJob(source=item["source"], source_id=item["source_id"])
+                self.session.add(row)
+            row.decision = item["decision"]
+            row.reason = str(item.get("reason") or "")[:4000]
+            row.settings_hash = str(item.get("settings_hash") or "")[:64]
+            row.evaluated_at = item.get("evaluated_at") or utc_now()
+        self.session.commit()
+
+    def last_tenant_run(self, source: str, tenant_key: str) -> datetime | None:
+        return self.session.scalar(
+            select(Run.finished_at)
+            .where(Run.source == source, Run.tenant_key == tenant_key, Run.finished_at.is_not(None))
+            .order_by(Run.finished_at.desc())
+            .limit(1)
+        )
 
     def notification_statuses(self, job_ids: Iterable[int], *, chunk_size: int = 400) -> dict[int, Notification]:
         found: dict[int, Notification] = {}
@@ -92,6 +165,9 @@ class JobRepository:
                     found = next((row for row in by_secondary.get(job["secondary_key"], [])
                                   if row.source != job["source"]), None)
             if found is not None:
+                found.posted_at = job.get("posted_at")
+                found.age_source = job.get("age_source")
+                found.age_days = job.get("age_days")
                 if found.content_hash != job["content_hash"]:
                     found.description = job.get("description", "")
                     found.content_hash = job["content_hash"]
@@ -184,14 +260,29 @@ class JobRepository:
         )
         self.session.commit()
 
-    def create_run(self) -> Run:
-        run = Run(started_at=utc_now())
+    def mark_notification_expired(self, job_id: int) -> None:
+        row = self.session.scalar(
+            select(Notification).where(Notification.job_id == job_id)
+        )
+        if row is None:
+            self.session.add(Notification(
+                job_id=job_id, state="expired", attempt_count=0, updated_at=utc_now(),
+                error="Job exceeded maximum age before notification.",
+            ))
+        elif row.state != "sent":
+            row.state = "expired"
+            row.updated_at = utc_now()
+            row.error = "Job exceeded maximum age before notification."
+        self.session.commit()
+
+    def create_run(self, *, source: str | None = None, tenant_key: str | None = None) -> Run:
+        run = Run(started_at=utc_now(), source=source, tenant_key=tenant_key)
         self.session.add(run)
         self.session.commit()
         return run
 
     def finish_run(self, run: Run, *, fetched: int, filtered: int, new: int, notified: int, errors: int,
-                   permanently_failed: int = 0) -> None:
+                   permanently_failed: int = 0, expired: int = 0) -> None:
         run.finished_at = utc_now()
         run.fetched = fetched
         run.filtered = filtered
@@ -199,10 +290,18 @@ class JobRepository:
         run.notified = notified
         run.errors = errors
         run.permanently_failed = permanently_failed
+        run.expired = expired
         self.session.commit()
 
     def unseen(self) -> list[Job]:
-        return list(self.session.scalars(select(Job).where(Job.notified_at.is_(None), Job.is_baseline.is_(False))))
+        expired_notification = exists(
+            select(Notification.id).where(
+                Notification.job_id == Job.id, Notification.state == "expired"
+            )
+        )
+        return list(self.session.scalars(select(Job).where(
+            Job.notified_at.is_(None), Job.is_baseline.is_(False), ~expired_notification
+        )))
 
     def mark_notified(self, jobs: Iterable[Job]) -> None:
         now = utc_now()

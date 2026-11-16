@@ -7,7 +7,45 @@ from pathlib import Path
 from typing import Any
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, HttpUrl, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+
+
+class WorkdayTenantConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    host: str
+    tenant: str
+    site: str
+    country_facet_id: str
+    assume_country: str | None = None
+    search_texts: list[str] = Field(default_factory=lambda: ["software engineer"], min_length=1)
+    page_size: int = Field(default=20, ge=1, le=100)
+    max_pages: int = Field(default=10, ge=1, le=100)
+    max_detail_requests_per_run: int = Field(default=30, ge=0, le=500)
+    min_interval_seconds: int = Field(default=3600, ge=0, le=31_536_000)
+    reevaluate_after_days: int = Field(default=14, ge=1, le=365)
+    excluded_title_levels: list[str] = Field(default_factory=lambda: ["IV", "V", "VI", "4", "5", "6"])
+
+    @field_validator("host", "tenant", "site", "country_facet_id")
+    @classmethod
+    def non_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Workday settings must not be blank")
+        return value.strip()
+
+    @field_validator("host")
+    @classmethod
+    def host_is_hostname(cls, value: str) -> str:
+        if "://" in value or "/" in value:
+            raise ValueError("Workday host must be a hostname without scheme or path")
+        return value
+
+    @field_validator("search_texts")
+    @classmethod
+    def search_texts_must_not_be_blank(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() for item in value):
+            raise ValueError("Workday search_texts must not contain blank entries")
+        return [item.strip() for item in value]
 
 
 class CompanyEntry(BaseModel):
@@ -18,6 +56,7 @@ class CompanyEntry(BaseModel):
     board_identifier: str | None = None
     status: Literal["pending_verification", "verified", "unsupported", "inactive"]
     careers_url: HttpUrl | None = None
+    workday: WorkdayTenantConfig | None = None
 
     @field_validator("company_name")
     @classmethod
@@ -50,6 +89,10 @@ class CompanyEntry(BaseModel):
             raise ValueError("unverified registry entries cannot have a board_identifier")
         if self.status == "verified" and self.ats_provider == "greenhouse" and not self.board_identifier:
             raise ValueError("verified Greenhouse entries require a board_identifier")
+        if self.workday is not None and self.ats_provider != "workday":
+            raise ValueError("workday settings require ats_provider=workday")
+        if self.status == "verified" and self.ats_provider == "workday" and self.workday is None:
+            raise ValueError("verified Workday entries require tenant settings")
         return self
 
 
@@ -68,3 +111,11 @@ def load_registry(path: str | Path = "data/company_registry.json") -> list[Compa
 def verified_greenhouse_entries(entries: list[CompanyEntry]) -> list[CompanyEntry]:
     """Return only explicitly verified Greenhouse entries with a usable token."""
     return [entry for entry in entries if entry.status == "verified" and (entry.ats_provider or "").casefold() == "greenhouse" and entry.board_identifier]
+
+
+def verified_workday_entries(entries: list[CompanyEntry]) -> list[CompanyEntry]:
+    """Return only explicitly verified companies with Workday tenant settings."""
+    return [
+        entry for entry in entries
+        if entry.status == "verified" and entry.ats_provider == "workday" and entry.workday is not None
+    ]

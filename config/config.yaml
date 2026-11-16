@@ -42,7 +42,7 @@ filters:
   locations: []
   preferred_cities: [Noida, Gurgaon, Gurugram, Delhi, Bengaluru, Bangalore, Hyderabad, Pune, Mumbai]
   max_min_years: 2
-  employment_types: [full-time]
+  employment_types: [full-time, internship, intern]
 
 telegram:
   enabled: true

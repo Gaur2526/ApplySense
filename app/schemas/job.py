@@ -28,6 +28,8 @@ class Job(BaseModel):
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$", max_length=64)
     experience_requirement: int | None = Field(default=None, ge=0, le=50)
     posted_at: datetime | None = None
+    age_source: str | None = Field(default=None, max_length=16)
+    age_days: int | None = Field(default=None, ge=0, le=36500)
     discovered_at: datetime = Field(default_factory=utc_now)
     uncertainty_reasons: list[str] = Field(default_factory=list)
 

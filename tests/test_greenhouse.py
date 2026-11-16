@@ -1,4 +1,7 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
+import logging
+import re
 
 import httpx
 import pytest
@@ -10,6 +13,10 @@ from app.companies.registry import CompanyEntry, verified_greenhouse_entries
 from app.database.connection import initialize_database
 from app.database.repository import JobRepository
 from app.schemas.job import Job as JobSchema
+from app.filters.age_filter import matches_age
+from app.filters.decision import FilterStatus
+from app.filters.employment_filter import matches_employment
+from app.notifications.formatting import format_job
 from app.scouts.greenhouse import GreenhouseResponseError, GreenhouseScout, normalize_greenhouse_job
 
 
@@ -89,6 +96,7 @@ def test_documented_job_normalizes_to_orm_fields_without_department_as_employmen
     assert job["description"] == "Build & ship"
     assert job["employment_type"] == ""
     assert job["posted_at"].isoformat() == "2016-01-14T15:55:28+00:00"
+    assert job["age_source"] == "updated"
 
 
 def test_normalized_greenhouse_fixture_passes_job_schema():
@@ -133,6 +141,8 @@ def test_job_schema_defaults_optional_fields():
     assert job.description == ""
     assert job.experience_requirement is None
     assert job.posted_at is None
+    assert job.age_source is None
+    assert job.age_days is None
     assert job.discovered_at.tzinfo is not None
     assert job.uncertainty_reasons == []
 
@@ -182,7 +192,7 @@ def test_to_orm_dict_contains_only_existing_orm_fields():
     assert set(values) == {
         "source", "source_id", "company", "title", "location", "employment_type",
         "description", "canonical_url", "content_hash", "experience_requirement",
-        "posted_at", "discovered_at", "uncertainty_reasons",
+        "posted_at", "age_source", "age_days", "discovered_at", "uncertainty_reasons",
     }
 
 
@@ -447,3 +457,107 @@ def test_company_fetch_failure_does_not_discard_other_company_results(monkeypatc
     jobs = asyncio.run(main.discover(AppConfig()))
     assert len(jobs) == 1
     assert jobs[0]["company"] == "Working Company"
+
+
+def feed_shaped_job(first_published=None, updated_at=None, metadata=None):
+    now = datetime.now(timezone.utc)
+    return documented_job(
+        id=8220001,
+        internal_job_id=10001,
+        requisition_id="R-10001",
+        company_name="MongoDB",
+        first_published=first_published,
+        updated_at=updated_at,
+        metadata=metadata,
+    )
+
+
+@pytest.mark.parametrize(
+    ("age", "expected"),
+    [(24, FilterStatus.REJECT), (6, FilterStatus.PASS), (7, FilterStatus.PASS), (8, FilterStatus.REJECT)],
+)
+def test_greenhouse_real_feed_first_published_age_boundaries(age, expected):
+    now = datetime.now(timezone.utc)
+    raw = feed_shaped_job(
+        first_published=(now - timedelta(days=age)).isoformat(),
+        updated_at=(now - timedelta(days=1)).isoformat(),
+    )
+    normalized = normalize_greenhouse_job(raw, BOARD, run_time=now)
+    assert normalized["source_id"] == "8220001"
+    assert normalized["age_source"] == "posted"
+    assert matches_age(normalized, 7, "allow", run_time=now).status is expected
+
+
+def test_greenhouse_missing_first_published_uses_updated_at_and_message_says_updated():
+    now = datetime.now(timezone.utc)
+    raw = feed_shaped_job(
+        first_published=None,
+        updated_at=(now - timedelta(days=2)).isoformat(),
+    )
+    normalized = normalize_greenhouse_job(raw, BOARD, run_time=now)
+    normalized["age_days"] = 2
+    message = format_job(normalized, run_time=now)
+    assert normalized["posted_at"] is not None
+    assert normalized["age_source"] == "updated"
+    assert "Updated 2 days ago" in message
+
+
+def test_greenhouse_unparseable_first_published_falls_back_to_updated_at():
+    now = datetime(2026, 11, 16, tzinfo=timezone.utc)
+    normalized = normalize_greenhouse_job(
+        feed_shaped_job(first_published="not-a-date", updated_at="2026-11-15T08:00:00+05:30"),
+        BOARD, run_time=now,
+    )
+    assert normalized["age_source"] == "updated"
+    assert normalized["posted_at"].isoformat() == "2026-11-15T02:30:00+00:00"
+
+
+def test_greenhouse_first_published_offset_converts_to_utc():
+    now = datetime(2026, 11, 16, tzinfo=timezone.utc)
+    normalized = normalize_greenhouse_job(
+        feed_shaped_job(first_published="2026-11-15T08:00:00-04:00"),
+        BOARD, run_time=now,
+    )
+    assert normalized["age_source"] == "posted"
+    assert normalized["posted_at"].isoformat() == "2026-11-15T12:00:00+00:00"
+
+
+def test_greenhouse_employment_type_is_read_only_from_exact_metadata_name(caplog):
+    normalized = normalize_greenhouse_job(
+        feed_shaped_job(metadata=[
+            {"id": 1, "name": "Employment Type", "value": "Intern", "value_type": "single_select"},
+            {"id": 2, "name": "Salary", "value": "$250,000", "value_type": "short_text"},
+            {"id": 3, "name": "Currency Range", "value": "USD 200k-250k", "value_type": "short_text"},
+        ]),
+        BOARD,
+    )
+    assert normalized["employment_type"] == "intern"
+    assert matches_employment(normalized, ["intern"]).status is FilterStatus.PASS
+    assert "metadata" not in normalized
+    assert "$250,000" not in repr(normalized)
+    assert "USD 200k-250k" not in repr(normalized)
+    assert "$250,000" not in caplog.text
+    assert "USD 200k-250k" not in caplog.text
+
+
+def test_greenhouse_does_not_guess_employment_from_other_metadata_names():
+    normalized = normalize_greenhouse_job(
+        feed_shaped_job(metadata=[
+            {"id": 1, "name": "Employment", "value": "Full time", "value_type": "single_select"},
+            {"id": 2, "name": "Job Type", "value": "Contract", "value_type": "single_select"},
+        ]),
+        BOARD,
+    )
+    assert normalized["employment_type"] == ""
+    assert matches_employment(normalized, ["full-time"]).status is FilterStatus.UNCERTAIN
+
+
+def test_greenhouse_future_timestamp_is_clamped_to_zero_without_schema_error():
+    now = datetime(2026, 11, 16, 12, tzinfo=timezone.utc)
+    normalized = normalize_greenhouse_job(
+        feed_shaped_job(first_published="2026-11-18T08:00:00Z"),
+        BOARD,
+        run_time=now,
+    )
+    assert normalized["age_days"] == 0
+    assert matches_age(normalized, 7, "allow", run_time=now).status is FilterStatus.PASS

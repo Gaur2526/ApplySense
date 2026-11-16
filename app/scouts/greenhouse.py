@@ -16,6 +16,7 @@ import httpx
 from pydantic import ValidationError
 
 from app.filters.experience_filter import parse_experience_requirement
+from app.filters.age_filter import age_days_at
 from app.schemas.job import Job as JobSchema
 from app.scouts.base import Scout
 from app.utils.hashing import content_hash
@@ -118,7 +119,9 @@ def _validate_job_record(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
     return raw, None
 
 
-def normalize_greenhouse_job(raw: dict, board: str) -> dict:
+def normalize_greenhouse_job(
+    raw: dict, board: str, *, run_time: datetime | None = None
+) -> dict:
     """Validate normalized fields with JobSchema and return ORM-compatible values."""
     location_data = raw.get("location") or {}
     location = location_data.get("name") or ""
@@ -127,6 +130,37 @@ def normalize_greenhouse_job(raw: dict, board: str) -> dict:
     title = raw.get("title") or ""
     source_id = raw.get("id")
     experience_requirement = parse_experience_requirement(f"{title} {description}")
+    first_published = _posted_at(raw.get("first_published"))
+    updated_at = _posted_at(raw.get("updated_at"))
+    if first_published is not None:
+        posted_at, age_source = first_published, "posted"
+    elif updated_at is not None:
+        posted_at, age_source = updated_at, "updated"
+    else:
+        posted_at, age_source = None, None
+    employment_type = ""
+    metadata = raw.get("metadata")
+    if isinstance(metadata, list):
+        employment_value = next(
+            (
+                item.get("value")
+                for item in metadata
+                if isinstance(item, dict)
+                and item.get("name") == "Employment Type"
+                and isinstance(item.get("value"), str)
+            ),
+            None,
+        )
+        employment_key = re.sub(r"[^a-z]+", " ", (employment_value or "").casefold()).strip()
+        employment_type = {
+            "full time": "full-time",
+            "fulltime": "full-time",
+            "contract": "contract",
+            "contractor": "contract",
+            "intern": "intern",
+            "internship": "intern",
+            "part time": "part-time",
+        }.get(employment_key, "")
     normalized = {
         "source": "greenhouse",
         "source_id": str(source_id if source_id is not None else f"{board}:{canonical}"),
@@ -135,12 +169,14 @@ def normalize_greenhouse_job(raw: dict, board: str) -> dict:
         "location": location,
         # The public Job Board API supplies departments, not employment type.
         # Leave this empty rather than misclassifying department names.
-        "employment_type": "",
+        "employment_type": employment_type,
         "description": description,
         "canonical_url": canonical,
-        "content_hash": content_hash(title, location, description),
+        "content_hash": content_hash(title, location, description, employment_type),
         "experience_requirement": experience_requirement,
-        "posted_at": _posted_at(raw.get("updated_at")),
+        "posted_at": posted_at,
+        "age_source": age_source,
+        "age_days": age_days_at({"posted_at": posted_at}, run_time) if posted_at is not None else None,
     }
     return JobSchema.model_validate(normalized).to_orm_dict()
 
@@ -186,6 +222,7 @@ class GreenhouseScout(Scout):
         if not isinstance(board, str) or not board.strip():
             raise ValueError("Greenhouse board token must not be empty")
         url = API.format(board=board.strip())
+        run_time = datetime.now(timezone.utc)
         async with self._semaphore:
             for attempt in range(self.retries + 1):
                 try:
@@ -227,7 +264,7 @@ class GreenhouseScout(Scout):
                         LOG.warning("Skipping malformed Greenhouse job board=%s index=%s id=%r: %s", board, index, job_id, reason)
                         continue
                     try:
-                        jobs.append(normalize_greenhouse_job(valid, board))
+                        jobs.append(normalize_greenhouse_job(valid, board, run_time=run_time))
                     except ValidationError as exc:
                         job_id = valid.get("id")
                         LOG.warning("Skipping invalid normalized Greenhouse job board=%s index=%s id=%r: %s", board, index, job_id, exc)

@@ -5,7 +5,7 @@ from typing import Any
 from app.filters.decision import FilterDecision, passed, rejected, uncertain
 
 REQUIREMENT_SECTION = re.compile(
-    r"\b(?:requirements?|qualifications?|minimum qualifications|"
+    r"\b(?:requirements?|minimum qualifications|(?<!preferred )qualifications?|"
     r"(?:our\s+)?ideal candidate|"
     r"what (?:we(?:'re| are)|you(?:'re| are)) looking for|"
     r"what (?:you|we)(?:'ll| will) bring|your experience|experience requirements)\b\s*:?",
@@ -14,7 +14,7 @@ REQUIREMENT_SECTION = re.compile(
 SECTION_END = re.compile(
     r"\b(?:responsibilities|what (?:you|we)(?:'ll| will) do|what we offer|benefits|"
     r"about (?:us|the company)|company overview|who we are|our culture|nice to have|"
-    r"preferred skills|equal opportunity|compensation|salary)\b\s*:?",
+    r"preferred qualifications?|preferred skills|equal opportunity|compensation|salary)\b\s*:?",
     re.I,
 )
 RANGE = re.compile(
@@ -27,7 +27,7 @@ MINIMUM = re.compile(
 )
 PLUS = re.compile(r"(?P<minimum>\b\d{1,2})\s*\+\s*(?:years?|yrs?)\b", re.I)
 PLAIN_EXPERIENCE = re.compile(
-    r"(?P<minimum>\b\d{1,2})\s*(?:years?|yrs?)\s+(?:of\s+)?"
+    r"(?P<minimum>\b\d{1,2})\s*(?:years?|yrs?)(?:['’])?\s+(?:of\s+)?"
     r"(?:(?:relevant|professional|related|work|industry)\s+)?experience\b",
     re.I,
 )
@@ -47,6 +47,7 @@ SENTENCE_END = re.compile(r"[.!?;\n]")
 class _ExperienceEvidence:
     minimum_years: int | None
     conflicting_values: tuple[int, ...] = ()
+    alternatives: bool = False
 
 
 def _requirement_text(text: str) -> tuple[str, bool]:
@@ -70,8 +71,29 @@ def _sentence_prefix(text: str, position: int) -> str:
     return text[previous:position]
 
 
-def _experience_evidence(text: str) -> _ExperienceEvidence:
+OPTION_BLOCK = re.compile(
+    r"\bOption\s+\d+\s*:\s*(.*?)(?=\bOption\s+\d+\s*:|\Z)",
+    re.I | re.S,
+)
+
+
+def _experience_evidence(text: str, *, allow_alternatives: bool = True) -> _ExperienceEvidence:
     source, has_requirement_section = _requirement_text(text)
+    options = list(OPTION_BLOCK.finditer(source)) if allow_alternatives else []
+    if len(options) >= 2:
+        option_evidence = [
+            _experience_evidence(f"Requirements: {option.group(1)}", allow_alternatives=False)
+            for option in options
+        ]
+        if any(item.conflicting_values for item in option_evidence):
+            conflicts = tuple(sorted({
+                value for item in option_evidence for value in item.conflicting_values
+            }))
+            return _ExperienceEvidence(minimum_years=None, conflicting_values=conflicts)
+        minima = [item.minimum_years for item in option_evidence if item.minimum_years is not None]
+        if minima:
+            return _ExperienceEvidence(minimum_years=min(minima), alternatives=True)
+
     values: set[int] = set()
     spans: list[tuple[int, int]] = []
 
@@ -130,15 +152,15 @@ def extract_experience_years(text: str) -> int | None:
 
 def matches_experience(job: dict[str, Any], max_min_years: int = 2) -> FilterDecision:
     years = job.get("experience_requirement")
-    evidence = None
+    evidence = _experience_evidence(f"{job.get('title', '')} {job.get('description', '')}")
     if years is None:
-        evidence = _experience_evidence(f"{job.get('title', '')} {job.get('description', '')}")
         years = evidence.minimum_years
-    if evidence and evidence.conflicting_values:
+    if job.get("experience_requirement") is None and evidence.conflicting_values:
         found = ", ".join(str(value) for value in evidence.conflicting_values)
         return uncertain(f"Conflicting minimum experience requirements were found: {found} years.")
+    alternatives_note = " (alternatives, lowest used)" if evidence.alternatives else ""
     if years is None:
         return uncertain("Minimum experience requirement is not stated unambiguously.")
     if years > max_min_years:
-        return rejected(f"Minimum experience requirement is {years} years; maximum allowed is {max_min_years}.")
-    return passed(f"Minimum experience requirement is {years} years, within the {max_min_years}-year limit.")
+        return rejected(f"Minimum experience requirement is {years} years; maximum allowed is {max_min_years}.{alternatives_note}")
+    return passed(f"Minimum experience requirement is {years} years, within the {max_min_years}-year limit.{alternatives_note}")

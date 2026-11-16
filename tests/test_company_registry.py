@@ -3,7 +3,9 @@ import asyncio
 import pytest
 from pydantic import ValidationError
 
-from app.companies.registry import CompanyEntry, load_registry, verified_greenhouse_entries
+from app.companies.registry import (
+    CompanyEntry, load_registry, verified_greenhouse_entries, verified_workday_entries,
+)
 from app.config import load_config
 from app.main import discover
 
@@ -31,11 +33,41 @@ def test_pending_companies_are_preserved_and_only_mongodb_is_verified_greenhouse
     assert len(entries) == 46
     pending = [entry for entry in entries if entry.company_name != "MongoDB"]
     assert all(entry.status == "pending_verification" for entry in pending)
-    assert all(entry.ats_provider is None for entry in pending)
+    assert all(
+        entry.ats_provider is None or (entry.company_name == "Walmart" and entry.ats_provider == "workday")
+        for entry in pending
+    )
     assert all(entry.board_identifier is None for entry in pending)
     mongodb = next(entry for entry in entries if entry.company_name == "MongoDB")
     assert (mongodb.status, mongodb.ats_provider, mongodb.board_identifier) == ("verified", "greenhouse", "mongodb")
     assert verified_greenhouse_entries(entries) == [mongodb]
+    assert verified_workday_entries(entries) == []
+
+
+def test_walmart_workday_settings_are_configured_but_pending():
+    walmart = next(entry for entry in load_registry() if entry.company_name == "Walmart")
+    assert walmart.status == "pending_verification"
+    assert walmart.ats_provider == "workday"
+    assert walmart.board_identifier is None
+    assert walmart.workday is not None
+    assert walmart.workday.host == "walmart.wd504.myworkdayjobs.com"
+    assert walmart.workday.tenant == "walmart"
+    assert walmart.workday.site == "WalmartExternal"
+    assert walmart.workday.country_facet_id == "c4f78be1a8f14da0ab49ce1162348a5e"
+
+
+def test_verified_workday_entries_require_explicit_configuration():
+    values = {
+        "company_name": "Example", "ats_provider": "workday", "status": "verified",
+        "workday": {
+            "host": "example.wd1.myworkdayjobs.com", "tenant": "example", "site": "External",
+            "country_facet_id": "facet",
+        },
+    }
+    entry = CompanyEntry.model_validate(values)
+    assert verified_workday_entries([entry]) == [entry]
+    with pytest.raises(ValidationError):
+        CompanyEntry.model_validate({**values, "workday": None})
 
 
 def test_existing_careers_urls_are_preserved():
@@ -86,6 +118,11 @@ def test_discovery_fetches_only_the_verified_mongodb_board_without_real_http(mon
         async def close(self):
             return None
 
+    class WorkdayMustNotFetch:
+        def __init__(self, **_kwargs):
+            pytest.fail("pending Workday entries must not be fetched by discovery")
+
     monkeypatch.setattr("app.main.GreenhouseScout", ScoutStub)
+    monkeypatch.setattr("app.main.WorkdayScout", WorkdayMustNotFetch)
     assert asyncio.run(discover(config)) == []
     assert fetched == ["mongodb"]

@@ -17,8 +17,17 @@ def test_run_cli_passes_mode_baseline_dry_run_and_limit(monkeypatch):
     ]) == 0
     assert captured == {
         "mode": "qualified", "baseline_mode": True, "dry_run": True,
-        "notify": False, "limit": 7, "explain": False,
+        "notify": False, "limit": 7, "explain": False, "force": False,
     }
+
+
+def test_run_cli_passes_force_for_workday_interval(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(cli, "load_config", lambda _path: AppConfig())
+    monkeypatch.setattr(cli, "configure_logging", lambda _level: None)
+    monkeypatch.setattr(cli, "run", lambda _config, **kwargs: captured.update(kwargs))
+    assert cli.main(["run", "--force"]) == 0
+    assert captured["force"] is True
 
 
 def test_baseline_subcommand_remains_available(monkeypatch):

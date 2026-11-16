@@ -30,6 +30,9 @@ class FilterConfig(StrictModel):
     locations: list[str] = Field(default_factory=list)
     preferred_cities: list[str] = Field(default_factory=list)
     unknown_location_policy: Literal["allow", "strict"] = "strict"
+    max_age_days: int = Field(default=7, ge=0, le=3650)
+    unknown_age_policy: Literal["allow", "reject"] = "allow"
+    baseline_include_recent: bool = False
     max_min_years: int = Field(default=2, ge=0, le=50)
     employment_types: list[str] = Field(default_factory=lambda: ["full-time"])
 

@@ -36,6 +36,8 @@ class Job(Base):
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
     needs_rescore: Mapped[bool] = mapped_column(Boolean, default=False)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    age_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    age_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     uncertainty_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -47,7 +49,7 @@ class Notification(Base):
     __tablename__ = "notifications"
     __table_args__ = (
         UniqueConstraint("job_id", name="uq_notifications_job_id"),
-        CheckConstraint("state IN ('pending', 'sent', 'failed')", name="ck_notifications_state"),
+        CheckConstraint("state IN ('pending', 'sent', 'failed', 'expired')", name="ck_notifications_state"),
         CheckConstraint("attempt_count >= 0", name="ck_notifications_attempt_count"),
     )
 
@@ -72,3 +74,22 @@ class Run(Base):
     notified: Mapped[int] = mapped_column(Integer, default=0)
     errors: Mapped[int] = mapped_column(Integer, default=0)
     permanently_failed: Mapped[int] = mapped_column(Integer, default=0)
+    expired: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    tenant_key: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+
+
+class EvaluatedJob(Base):
+    __tablename__ = "evaluated_jobs"
+    __table_args__ = (
+        UniqueConstraint("source", "source_id", name="uq_evaluated_jobs_source_source_id"),
+        CheckConstraint("decision IN ('PASS', 'UNCERTAIN', 'REJECT')", name="ck_evaluated_jobs_decision"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    source_id: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    settings_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)

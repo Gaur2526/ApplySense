@@ -2,6 +2,7 @@ import html
 import re
 from urllib.parse import quote
 
+from app.filters.age_filter import age_days_at
 
 HTML_TOKEN = re.compile(r"(<[^>]*>|&(?:#[0-9]+|#x[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]+);)")
 TAG_NAME = re.compile(r"^</?\s*([a-zA-Z][a-zA-Z0-9]*)")
@@ -102,12 +103,22 @@ def _uncertainty_labels(job: dict) -> list[str]:
     return labels
 
 
-def format_job(job: dict, *, limit: int = 4096) -> str:
+def format_job(job: dict, *, limit: int = 4096, run_time=None) -> str:
     title = html.escape(str(job.get("title") or "Untitled"), quote=True)
     company = html.escape(str(job.get("company") or ""), quote=True)
     location = html.escape(str(job.get("location") or "Unspecified"), quote=True)
     url = html.escape(quote(str(job.get("canonical_url") or ""), safe=":/?#[]@!$&'()*+,;=%"), quote=True)
     lines = [f"<b>{title} — {company}</b>", f"Location: {location}"]
+    age_days = age_days_at(job, run_time)
+    if age_days is None:
+        lines.append("Posting date unknown")
+    else:
+        age_source = "Updated" if job.get("age_source") == "updated" else "Posted"
+        if age_days <= 0:
+            lines.append(f"{age_source} today")
+        else:
+            unit = "day" if age_days == 1 else "days"
+            lines.append(f"{age_source} {age_days} {unit} ago")
     if job.get("experience_requirement") is not None:
         lines.append(f"Experience: {job['experience_requirement']}+ years")
     checks = _uncertainty_labels(job)

@@ -1,7 +1,7 @@
 import asyncio
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import logging
@@ -12,7 +12,7 @@ import app.main as main
 import app.notifications.telegram as telegram
 from app.config import AppConfig, NotificationConfig, TelegramConfig
 from app.database.connection import initialize_database
-from app.database.models import Job, Notification
+from app.database.models import Job, Notification, Run
 from app.notifications.formatting import format_job
 from app.utils.logger import configure_logging
 
@@ -179,7 +179,7 @@ def test_cap_orders_priority_and_sends_queued_summary_then_remaining_job_next_ru
     monkeypatch.setattr(main, "discover", fake_discover)
     config = AppConfig(
         database_url=f"sqlite:///{tmp_path / 'cap.db'}",
-        filters={"preferred_cities": ["Pune", "Bengaluru"]},
+        filters={"preferred_cities": ["Pune", "Bengaluru"], "max_age_days": 3650},
         notifications=NotificationConfig(per_run_cap=4),
         telegram=TelegramConfig(bot_token=TOKEN, chat_id=CHAT, enabled=True),
     )
@@ -195,6 +195,105 @@ def test_cap_orders_priority_and_sends_queued_summary_then_remaining_job_next_ru
     jobs.clear()  # the scout no longer returns the queued job
     assert main.run(config, notify=True) == 1
     assert any("Older Mumbai" in item["text"] for item in requests[5:])
+    engine.dispose()
+
+
+def test_queued_job_that_ages_out_is_expired_not_failed_and_reported_once(tmp_path, monkeypatch):
+    outgoing = []
+    summaries = []
+    async def fake_discover(_config, *, stats=None):
+        if stats is not None:
+            stats.update(fetched=2, filtered=2, errors=0)
+        return [
+            job(
+                source_id=f"queue-{index}",
+                canonical_url=f"https://jobs.example/queue-{index}",
+                title=f"Engineer {index}",
+                location="Bengaluru",
+                posted_at=None,
+                age_source="posted",
+                age_days=5,
+                discovered_at=datetime.now().astimezone(),
+            )
+            for index in range(2)
+        ] if not outgoing else []
+
+    async def fake_send(_token, _chat, jobs):
+        outgoing.extend(jobs)
+        return [True for _ in jobs]
+
+    async def fake_summary(_token, _chat, message):
+        summaries.append(message)
+        return True
+
+    monkeypatch.setattr(main, "discover", fake_discover)
+    monkeypatch.setattr(main, "send_jobs", fake_send)
+    monkeypatch.setattr(main, "send_summary", fake_summary)
+    database_url = f"sqlite:///{tmp_path / 'queue-age.db'}"
+    config = AppConfig(
+        database_url=database_url,
+        filters={"max_age_days": 7},
+        notifications=NotificationConfig(per_run_cap=1),
+        telegram=TelegramConfig(bot_token=TOKEN, chat_id=CHAT, enabled=True),
+    )
+    assert main.run(config, notify=True) == 1
+    assert summaries == ["1 more new jobs queued for the next run"]
+
+    engine = create_engine(database_url)
+    with Session(engine) as session:
+        queued = session.scalar(
+            select(Job).where(Job.notified_at.is_(None), Job.is_baseline.is_(False))
+        )
+        queued.discovered_at = datetime.now(timezone.utc) - timedelta(days=3)
+        session.commit()
+    engine.dispose()
+
+    assert main.run(config, notify=True) == 0
+    assert len(outgoing) == 1
+    assert summaries[-1] == "1 queued jobs expired"
+    engine = create_engine(database_url)
+    with Session(engine) as session:
+        notification = session.scalar(select(Notification).where(Notification.state == "expired"))
+        last_run = session.scalar(select(Run).order_by(Run.id.desc()))
+        assert notification is not None
+        assert notification.attempt_count == 0
+        assert last_run.expired == 1
+        assert last_run.errors == 0
+    engine.dispose()
+
+
+def test_baseline_include_recent_leaves_recent_job_for_first_normal_run(tmp_path, monkeypatch):
+    sends = []
+    recent_job = job(
+        source_id="recent-baseline", canonical_url="https://jobs.example/recent-baseline",
+        title="Recent Engineer", posted_at=datetime.now(timezone.utc) - timedelta(days=3),
+        age_source="posted", age_days=3,
+    )
+
+    async def fake_discover(_config, *, stats=None, baseline_mode=False):
+        if stats is not None:
+            stats.update(fetched=1, filtered=1, errors=0)
+        return [dict(recent_job)]
+
+    async def fake_send(_token, _chat, jobs):
+        sends.extend(jobs)
+        return [True for _ in jobs]
+
+    monkeypatch.setattr(main, "discover", fake_discover)
+    monkeypatch.setattr(main, "send_jobs", fake_send)
+    monkeypatch.setattr(main, "send_summary", lambda *_args: asyncio.sleep(0, result=True))
+    config = AppConfig(
+        database_url=f"sqlite:///{tmp_path / 'baseline-recent.db'}",
+        filters={"keywords": ["engineer"], "baseline_include_recent": True, "max_age_days": 7},
+        telegram=TelegramConfig(bot_token=TOKEN, chat_id=CHAT, enabled=True),
+    )
+
+    assert main.run(config, baseline_mode=True, notify=True) == 0
+    engine = create_engine(config.database_url)
+    with Session(engine) as session:
+        assert session.scalar(select(Job).where(Job.source_id == "recent-baseline")) is None
+    assert main.run(config, notify=True) == 1
+    assert [item["source_id"] for item in sends] == ["recent-baseline"]
     engine.dispose()
 
 
