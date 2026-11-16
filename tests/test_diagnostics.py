@@ -1,9 +1,13 @@
 import pytest
+from datetime import datetime, timedelta, timezone
 
 import app.main as main
 from app.config import AppConfig
 from app.diagnostics import format_filter_diagnostics
 from app.filters.evaluation import evaluate_filter_decisions
+
+
+EXPLAIN_NOW = datetime(2026, 11, 16, 12, tzinfo=timezone.utc)
 
 
 @pytest.fixture
@@ -129,3 +133,54 @@ def test_keyword_rejection_samples_are_limited_to_ten_titles():
     assert sum(line.startswith("  - ") for line in samples.splitlines()) == 10
     assert "Unmatched Role 9" in samples
     assert "Unmatched Role 10" not in samples
+
+
+def test_explain_lists_unrecognized_locations_and_age_only_near_misses():
+    config = AppConfig(filters={"keywords": ["software engineer"], "unknown_location_policy": "strict"})
+
+    def make_job(source, source_id, location, *, title="Software Engineer", age=None):
+        return {
+            "source": source, "source_id": source_id, "company": "Example Co",
+            "title": title, "location": location, "employment_type": "full-time",
+            "description": "Requirements: 1 year of experience",
+            "canonical_url": f"https://jobs.example/{source_id}",
+            "content_hash": "a" * 64, "experience_requirement": 1,
+            "posted_at": EXPLAIN_NOW - timedelta(days=age) if age is not None else None,
+            "age_source": "posted" if age is not None else None,
+        }
+
+    jobs = [
+        make_job("greenhouse", "dublin-1", "Dublin"),
+        make_job("greenhouse", "dublin-2", "Dublin"),
+        make_job("ashby", "dublin-3", "Dublin"),
+        make_job("greenhouse", "age-only", "Bengaluru, India", age=9),
+        make_job("greenhouse", "multiple-rejects", "Dublin", title="Frontend Developer", age=9),
+    ]
+
+    report = format_filter_diagnostics(jobs, config, run_time=EXPLAIN_NOW)
+    locations = report.split("Unrecognized locations (top 25):\n", 1)[1].split("\n\nNear misses", 1)[0]
+    near_misses = report.split("Near misses (rejected only by age): 1\n", 1)[1].split("\n\nIndia-located", 1)[0]
+    assert "4 — Dublin — ashby (1), greenhouse (3)" in locations
+    assert "Software Engineer — Example Co — Bengaluru, India — 9 days — age_source=posted" in near_misses
+    assert "multiple-rejects" not in near_misses
+
+
+def test_explain_limits_unrecognized_location_list_to_top_25():
+    config = AppConfig(filters={"keywords": ["software engineer"], "unknown_location_policy": "strict"})
+    jobs = [
+        {
+            "source": "greenhouse", "source_id": f"location-{letter}",
+            "company": "Example Co", "title": "Software Engineer",
+            "location": f"Unrecognized Place {letter}", "employment_type": "full-time",
+            "description": "Requirements: 1 year of experience",
+            "canonical_url": f"https://jobs.example/location-{letter}",
+            "content_hash": "b" * 64, "experience_requirement": 1,
+        }
+        for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    ]
+    report = format_filter_diagnostics(jobs, config, run_time=EXPLAIN_NOW)
+    locations = report.split("Unrecognized locations (top 25):\n", 1)[1].split("\n\nNear misses", 1)[0]
+    entries = [line for line in locations.splitlines() if line.strip()]
+    assert len(entries) == 25
+    assert any("Unrecognized Place A" in line for line in entries)
+    assert not any("Unrecognized Place Z" in line for line in entries)
