@@ -1,0 +1,33 @@
+{
+  "total": 200,
+  "jobPostings": [
+    {
+      "title": "Senior Software Engineer",
+      "externalPath": "/job/IN-KA-BANGALORE-Home-Office-PW-II/Senior-Software-Engineer---Java_R-1642453",
+      "locationsText": "IN KA BANGALORE Home Office PW II",
+      "postedOn": "Posted 30+ Days Ago",
+      "bulletFields": [
+        "R-1642453"
+      ]
+    },
+    {
+      "title": "Software Engineer III",
+      "externalPath": "/job/IN-KA-BANGALORE-Home-Office-PW-II/Software-Engineer---III---Java_R-1671744",
+      "locationsText": "IN KA BANGALORE Home Office PW II",
+      "postedOn": "Posted 30+ Days Ago",
+      "bulletFields": [
+        "R-1671744"
+      ]
+    },
+    {
+      "title": "Staff Software Engineer",
+      "externalPath": "/job/IN-KA-BANGALORE-Home-Office-PW-II/Staff-Software-Engineer_R-1899086",
+      "locationsText": "IN KA BANGALORE Home Office PW II",
+      "postedOn": "Posted 30+ Days Ago",
+      "bulletFields": [
+        "R-1899086"
+      ]
+    }
+  ],
+  "userAuthenticated": false
+}
