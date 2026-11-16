@@ -220,7 +220,7 @@
     "company_name": "Walmart",
     "ats_provider": "workday",
     "board_identifier": null,
-    "status": "pending_verification",
+    "status": "verified",
     "careers_url": null,
     "workday": {
       "host": "walmart.wd504.myworkdayjobs.com",
@@ -230,7 +230,7 @@
       "assume_country": "IN",
       "search_texts": ["software engineer"],
       "page_size": 20,
-      "max_pages": 10,
+      "max_pages": 15,
       "max_detail_requests_per_run": 30,
       "min_interval_seconds": 3600,
       "reevaluate_after_days": 14,

@@ -30,6 +30,7 @@ from app.scouts.workday import (
     WorkdayRobotsBlockedError,
     WorkdayScout,
     _list_job,
+    _posted_age_disagreement,
     normalize_workday_job,
     parse_workday_posted_age,
     title_level_rejection,
@@ -166,6 +167,40 @@ def test_pagination_stops_on_short_empty_or_max_pages(responses, page_size, max_
     run_async(scenario())
     assert len(seen) == expected_requests
     assert [body["offset"] for body in seen] == [i * page_size for i in range(expected_requests)]
+
+
+def test_max_pages_truncation_logs_missing_jobs_warning_once(caplog):
+    calls = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        page = body["offset"] // 2
+        records = [
+            list_item(req=f"R-{page * 2 + index}")
+            for index in range(2)
+        ]
+        return httpx.Response(200, json=list_response(records, total=11), request=request)
+
+    scout, client = make_scout(handler)
+    async def scenario():
+        try:
+            return await scout.list_jobs(
+                "Walmart", tenant(page_size=2, max_pages=3, search_texts=["software engineer"])
+            )
+        finally:
+            await client.aclose()
+
+    jobs = run_async(scenario())
+    warnings = [
+        record.getMessage() for record in caplog.records
+        if record.levelname == "WARNING" and "max_pages reached" in record.getMessage()
+    ]
+    assert len(jobs) == 6
+    assert len(calls) == 3
+    assert warnings == [
+        "Workday tenant walmart: max_pages reached, 6 of total 11 jobs seen; some jobs may be missing"
+    ]
 
 
 def test_results_merge_across_search_texts_and_dedupe_by_source_id():
@@ -357,7 +392,101 @@ def test_workday_start_date_overrides_disagreeing_posted_on_label_and_is_utc(cap
     assert normalized["posted_at"] == datetime(2026, 11, 6, tzinfo=timezone.utc)
     assert normalized["age_days"] == 10
     assert matches_age(normalized, 7, "allow", run_time=fixed_run).status is FilterStatus.REJECT
-    assert "disagrees with startDate" in caplog.text
+    assert "disagrees with startDate" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("label", "start_age", "expected"),
+    [
+        ("Posted 30+ Days Ago", 510, None),
+        ("Posted 30+ Days Ago", 10, "real"),
+        ("Posted 6 Days Ago", 6, None),
+        ("Posted 6 Days Ago", 7, "minor"),
+    ],
+)
+def test_workday_posted_on_label_comparison_handles_bounds_and_rounding(label, start_age, expected):
+    assert _posted_age_disagreement(label, parse_workday_posted_age(label), start_age) == expected
+
+
+@pytest.mark.parametrize(
+    ("start_age", "expected_warning"),
+    [(510, False), (10, True)],
+)
+def test_workday_30_plus_start_date_reconciles_lower_bound(start_age, expected_warning, caplog):
+    fixed_run = datetime(2026, 11, 16, 12, tzinfo=timezone.utc)
+    postings = [list_item(req="R-30PLUS", posted_on="Posted 30+ Days Ago")]
+
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(200, json=list_response(postings), request=request)
+        start_date = (fixed_run - timedelta(days=start_age)).date().isoformat()
+        return httpx.Response(200, json=detail_response("R-30PLUS", startDate=start_date), request=request)
+
+    scout, client = make_scout(handler)
+    async def scenario():
+        try:
+            return await scout.fetch_jobs(
+                "Walmart", tenant(), config(max_age_days=60), run_time=fixed_run
+            )
+        finally:
+            await client.aclose()
+
+    results = run_async(scenario())
+    assert len(results) == 1
+    assert results[0].job["age_days"] == start_age
+    assert ("postedOn age disagrees with startDate" in caplog.text) is expected_warning
+
+
+def test_many_workday_age_disagreements_emit_one_warning_with_count(caplog):
+    fixed_run = datetime(2026, 11, 16, 12, tzinfo=timezone.utc)
+    postings = [list_item(req=f"R-{index}", posted_on="Posted Today") for index in range(3)]
+
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(200, json=list_response(postings), request=request)
+        req = int(re.search(r"_R-(\d+)$", request.url.path).group(1))
+        start_date = (fixed_run - timedelta(days=10 + req)).date().isoformat()
+        return httpx.Response(200, json=detail_response(f"R-{req}", startDate=start_date), request=request)
+
+    scout, client = make_scout(handler)
+    async def scenario():
+        try:
+            return await scout.fetch_jobs("Walmart", tenant(), config(), run_time=fixed_run)
+        finally:
+            await client.aclose()
+
+    run_async(scenario())
+    warnings = [
+        record.getMessage() for record in caplog.records
+        if record.levelname == "WARNING" and "postedOn age disagrees with startDate" in record.getMessage()
+    ]
+    assert warnings == [
+        "Workday postedOn age disagrees with startDate for 3 jobs in tenant walmart; using startDate"
+    ]
+
+
+def test_minor_workday_age_disagreement_is_debug_only(caplog):
+    caplog.set_level("DEBUG")
+    fixed_run = datetime(2026, 11, 16, 12, tzinfo=timezone.utc)
+    postings = [list_item(req="R-6", posted_on="Posted 6 Days Ago")]
+
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(200, json=list_response(postings), request=request)
+        start_date = (fixed_run - timedelta(days=7)).date().isoformat()
+        return httpx.Response(200, json=detail_response("R-6", startDate=start_date), request=request)
+
+    scout, client = make_scout(handler)
+    async def scenario():
+        try:
+            return await scout.fetch_jobs("Walmart", tenant(), config(), run_time=fixed_run)
+        finally:
+            await client.aclose()
+
+    run_async(scenario())
+    messages = [record for record in caplog.records if "disagrees with startDate" in record.getMessage()]
+    assert len(messages) == 1
+    assert messages[0].levelname == "DEBUG"
 
 
 def test_workday_missing_start_date_keeps_label_age():

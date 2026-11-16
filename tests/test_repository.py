@@ -230,7 +230,7 @@ def test_second_discovery_run_cannot_notify_same_job(tmp_path, monkeypatch):
     config = AppConfig(database_url=f"sqlite:///{tmp_path / 'runs.db'}",
                        telegram=TelegramConfig(bot_token="test-token", chat_id="test-chat", enabled=True))
 
-    async def fake_discover(_config, *, stats=None):
+    async def fake_discover(_config, *, stats=None, **_kwargs):
         if stats is not None:
             stats.update(fetched=1, filtered=1, errors=0)
         return [dict(job)]
@@ -270,7 +270,7 @@ def test_same_source_distinct_requisitions_with_same_title_and_location_are_kept
     config = AppConfig(database_url=f"sqlite:///{tmp_path / 'same-source.db'}",
                        telegram=TelegramConfig(bot_token="test-token", chat_id="test-chat", enabled=True))
 
-    async def fake_discover(_config, *, stats=None):
+    async def fake_discover(_config, *, stats=None, **_kwargs):
         if stats is not None:
             stats.update(fetched=2, filtered=2, errors=0)
         return [dict(job) for job in jobs]
@@ -304,7 +304,7 @@ def test_cross_source_secondary_duplicate_is_notified_once(tmp_path, monkeypatch
     config = AppConfig(database_url=f"sqlite:///{tmp_path / 'cross-source.db'}",
                        telegram=TelegramConfig(bot_token="test-token", chat_id="test-chat", enabled=True))
 
-    async def fake_discover(_config, *, stats=None):
+    async def fake_discover(_config, *, stats=None, **_kwargs):
         if stats is not None:
             stats.update(fetched=1, filtered=1, errors=0)
         return [dict(current[0])]
@@ -340,7 +340,7 @@ def test_baseline_jobs_are_suppressed_on_the_immediate_normal_run(tmp_path, monk
     config = AppConfig(database_url=f"sqlite:///{tmp_path / 'baseline-run.db'}",
                        telegram=TelegramConfig(bot_token="test-token", chat_id="test-chat", enabled=True))
 
-    async def fake_discover(_config, *, stats=None):
+    async def fake_discover(_config, *, stats=None, **_kwargs):
         if stats is not None:
             stats.update(fetched=1, filtered=1, errors=0)
         return [dict(job)]
@@ -383,7 +383,7 @@ def test_exhausted_notification_attempt_is_counted_in_run_summary(tmp_path, monk
         session.add(Notification(job_id=job_id, state="failed", attempt_count=3))
         session.commit()
 
-    async def fake_discover(_config, *, stats=None):
+    async def fake_discover(_config, *, stats=None, **_kwargs):
         if stats is not None:
             stats.update(fetched=1, filtered=1, errors=0)
         return [dict(job)]

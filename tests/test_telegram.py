@@ -171,7 +171,7 @@ def test_cap_orders_priority_and_sends_queued_summary_then_remaining_job_next_ru
         job(source_id="new", canonical_url="https://jobs.example/new", title="Newer Mumbai", location="Mumbai, India", posted_at=datetime.fromisoformat("2026-01-01T00:00:00+00:00")),
     ]
 
-    async def fake_discover(_config, *, stats=None):
+    async def fake_discover(_config, *, stats=None, **_kwargs):
         if stats is not None:
             stats.update(fetched=len(jobs), filtered=len(jobs), errors=0)
         return [dict(item) for item in jobs]
@@ -201,7 +201,7 @@ def test_cap_orders_priority_and_sends_queued_summary_then_remaining_job_next_ru
 def test_queued_job_that_ages_out_is_expired_not_failed_and_reported_once(tmp_path, monkeypatch):
     outgoing = []
     summaries = []
-    async def fake_discover(_config, *, stats=None):
+    async def fake_discover(_config, *, stats=None, **_kwargs):
         if stats is not None:
             stats.update(fetched=2, filtered=2, errors=0)
         return [
@@ -270,7 +270,7 @@ def test_baseline_include_recent_leaves_recent_job_for_first_normal_run(tmp_path
         age_source="posted", age_days=3,
     )
 
-    async def fake_discover(_config, *, stats=None, baseline_mode=False):
+    async def fake_discover(_config, *, stats=None, baseline_mode=False, **_kwargs):
         if stats is not None:
             stats.update(fetched=1, filtered=1, errors=0)
         return [dict(recent_job)]
@@ -310,7 +310,7 @@ def test_failed_send_is_retryable_and_marked_sent_only_after_success(tmp_path, m
     install_transport(monkeypatch, handler)
     job_item = job()
 
-    async def fake_discover(_config, *, stats=None):
+    async def fake_discover(_config, *, stats=None, **_kwargs):
         if stats is not None:
             stats.update(fetched=1, filtered=1, errors=0)
         return [dict(job_item)]
@@ -335,7 +335,7 @@ def test_failed_send_is_retryable_and_marked_sent_only_after_success(tmp_path, m
 
 
 def test_dry_run_never_sends_or_writes_notification_rows(tmp_path, monkeypatch):
-    async def fake_discover(_config, *, stats=None):
+    async def fake_discover(_config, *, stats=None, **_kwargs):
         if stats is not None:
             stats.update(fetched=1, filtered=1, errors=0)
         return [job()]

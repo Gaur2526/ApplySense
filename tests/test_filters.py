@@ -269,7 +269,7 @@ def test_uncertain_jobs_continue_and_keep_reasons_in_storage(tmp_path, monkeypat
     assert filtered[0]["uncertainty_reasons"]
     assert "Employment type is not stated." not in filtered[0]["uncertainty_reasons"]
 
-    async def fake_discover(_config, *, stats=None):
+    async def fake_discover(_config, *, stats=None, **_kwargs):
         if stats is not None:
             stats.update(fetched=len(filtered), filtered=len(filtered), errors=0)
         return filtered

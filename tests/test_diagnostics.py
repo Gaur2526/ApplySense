@@ -55,7 +55,7 @@ def test_explain_reports_filter_counts_reasons_first_reject_and_all_india_jobs(
         },
     )
 
-    async def fake_discover(_config, *, stats=None, include_rejected=False):
+    async def fake_discover(_config, *, stats=None, include_rejected=False, **_kwargs):
         assert include_rejected is True
         if stats is not None:
             stats.update(fetched=4, filtered=1, errors=0)

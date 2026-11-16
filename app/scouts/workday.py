@@ -203,6 +203,21 @@ def _posted_at(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _posted_age_disagreement(
+    label: str, label_age: int | None, start_date_age: int | None
+) -> str | None:
+    """Classify date-label differences; 30+ is a lower-bound label."""
+    if not isinstance(start_date_age, int) or not isinstance(label_age, int):
+        return None
+    normalized_label = " ".join(str(label or "").casefold().split())
+    if normalized_label == "posted 30+ days ago":
+        return "real" if start_date_age < 30 else None
+    difference = abs(start_date_age - label_age)
+    if difference == 0:
+        return None
+    return "minor" if difference <= 1 else "real"
+
+
 def _time_type(value: Any) -> str:
     text = " ".join(str(value or "").casefold().split())
     if text in {"full time", "full-time", "fulltime"}:
@@ -240,15 +255,6 @@ def normalize_workday_job(
     start_date = _posted_at(info.get("startDate"))
     label_age = list_job.get("age_days")
     detail_age = age_days_at({"posted_at": start_date}, run_time) if start_date is not None else None
-    if (
-        detail_age is not None
-        and isinstance(label_age, int)
-        and abs(detail_age - label_age) > 1
-    ):
-        LOG.warning(
-            "Workday postedOn age disagrees with startDate for %s; using startDate",
-            list_job["source_id"],
-        )
     resolved_age = detail_age if detail_age is not None else label_age
     normalized = {
         "source": "workday",
@@ -389,10 +395,11 @@ class WorkdayScout:
 
     async def list_jobs(self, company_name: str, tenant: WorkdayTenantConfig) -> list[dict[str, Any]]:
         deduplicated: dict[str, dict[str, Any]] = {}
+        truncated_total: int | None = None
         for search_text in tenant.search_texts:
             offset = 0
-            for _page in range(tenant.max_pages):
-                _total, records = await self.fetch_list_page(tenant, search_text, offset)
+            for page_index in range(tenant.max_pages):
+                total, records = await self.fetch_list_page(tenant, search_text, offset)
                 if not records:
                     break
                 for item in records:
@@ -403,7 +410,14 @@ class WorkdayScout:
                     deduplicated.setdefault(normalized["source_id"], normalized)
                 if len(records) < tenant.page_size:
                     break
+                if page_index == tenant.max_pages - 1:
+                    truncated_total = max(truncated_total or 0, total)
                 offset += tenant.page_size
+        if truncated_total is not None:
+            LOG.warning(
+                "Workday tenant %s: max_pages reached, %d of total %d jobs seen; some jobs may be missing",
+                tenant.tenant, len(deduplicated), truncated_total,
+            )
         return list(deduplicated.values())
 
     async def fetch_jobs(
@@ -415,8 +429,9 @@ class WorkdayScout:
         known_source_ids: set[str] | None = None,
         recently_evaluated_source_ids: set[str] | None = None,
         baseline_mode: bool = False,
+        run_time: datetime | None = None,
     ) -> list[WorkdayEvaluation]:
-        run_time = datetime.now(timezone.utc)
+        run_time = run_time or datetime.now(timezone.utc)
         known = known_source_ids or set()
         recently_evaluated = recently_evaluated_source_ids or set()
         list_jobs = await self.list_jobs(company_name, tenant)
@@ -461,6 +476,7 @@ class WorkdayScout:
             else:
                 candidates.append(item)
         details_count = 0
+        real_age_disagreements = 0
         for item in candidates:
             if details_count >= tenant.max_detail_requests_per_run:
                 break
@@ -473,6 +489,16 @@ class WorkdayScout:
                 LOG.warning("Skipping Workday job tenant=%s source_id=%s: %s", tenant.tenant, item["source_id"], reason)
                 evaluations.append(WorkdayEvaluation(item["source_id"], "REJECT", reason, item))
                 continue
+            disagreement = _posted_age_disagreement(
+                item.get("posted_on"), item.get("age_days"), job.get("age_days")
+            ) if job.get("posted_at") is not None else None
+            if disagreement == "minor":
+                LOG.debug(
+                    "Workday postedOn age disagrees with startDate by at most one day for %s; using startDate",
+                    item["source_id"],
+                )
+            elif disagreement == "real":
+                real_age_disagreements += 1
             _individual, pipeline, _first_rejection = evaluate_filter_decisions(
                 job, config, location_assume_country=tenant.assume_country, run_time=run_time
             )
@@ -496,4 +522,9 @@ class WorkdayScout:
                 job["uncertainty_reasons"] = uncertainties
                 safe_job = job
             evaluations.append(WorkdayEvaluation(item["source_id"], decision, reason, safe_job))
+        if real_age_disagreements:
+            LOG.warning(
+                "Workday postedOn age disagrees with startDate for %d jobs in tenant %s; using startDate",
+                real_age_disagreements, tenant.tenant,
+            )
         return evaluations

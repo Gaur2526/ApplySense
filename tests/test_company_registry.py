@@ -28,25 +28,26 @@ def test_registry_contains_exactly_the_pdf_companies_once():
     assert names == PDF_COMPANY_NAMES
 
 
-def test_pending_companies_are_preserved_and_only_mongodb_is_verified_greenhouse():
+def test_pending_companies_are_preserved_with_only_mongodb_and_walmart_verified():
     entries = load_registry()
     assert len(entries) == 46
-    pending = [entry for entry in entries if entry.company_name != "MongoDB"]
+    pending = [entry for entry in entries if entry.company_name not in {"MongoDB", "Walmart"}]
     assert all(entry.status == "pending_verification" for entry in pending)
     assert all(
-        entry.ats_provider is None or (entry.company_name == "Walmart" and entry.ats_provider == "workday")
+        entry.ats_provider is None
         for entry in pending
     )
     assert all(entry.board_identifier is None for entry in pending)
     mongodb = next(entry for entry in entries if entry.company_name == "MongoDB")
     assert (mongodb.status, mongodb.ats_provider, mongodb.board_identifier) == ("verified", "greenhouse", "mongodb")
     assert verified_greenhouse_entries(entries) == [mongodb]
-    assert verified_workday_entries(entries) == []
+    walmart = next(entry for entry in entries if entry.company_name == "Walmart")
+    assert verified_workday_entries(entries) == [walmart]
 
 
-def test_walmart_workday_settings_are_configured_but_pending():
+def test_walmart_workday_settings_are_configured_and_verified():
     walmart = next(entry for entry in load_registry() if entry.company_name == "Walmart")
-    assert walmart.status == "pending_verification"
+    assert walmart.status == "verified"
     assert walmart.ats_provider == "workday"
     assert walmart.board_identifier is None
     assert walmart.workday is not None
@@ -54,6 +55,7 @@ def test_walmart_workday_settings_are_configured_but_pending():
     assert walmart.workday.tenant == "walmart"
     assert walmart.workday.site == "WalmartExternal"
     assert walmart.workday.country_facet_id == "c4f78be1a8f14da0ab49ce1162348a5e"
+    assert walmart.workday.max_pages == 15
 
 
 def test_verified_workday_entries_require_explicit_configuration():
@@ -103,9 +105,15 @@ def test_verified_greenhouse_entry_cannot_have_missing_identifier():
         CompanyEntry(company_name="Invalid Co", ats_provider="greenhouse", status="verified")
 
 
-def test_discovery_fetches_only_the_verified_mongodb_board_without_real_http(monkeypatch):
-    config = load_config("config/config.yaml", env_file=None)
+def test_discovery_fetches_verified_boards_without_real_http(monkeypatch):
+    from app.config import AppConfig
+    config = AppConfig(
+        database_url="sqlite:///:memory:",
+        company_registry_path="data/company_registry.json",
+        filters={"keywords": ["engineer"]},
+    )
     fetched = []
+    workday_fetched = []
 
     class ScoutStub:
         def __init__(self, **_kwargs):
@@ -120,9 +128,15 @@ def test_discovery_fetches_only_the_verified_mongodb_board_without_real_http(mon
 
     class WorkdayMustNotFetch:
         def __init__(self, **_kwargs):
-            pytest.fail("pending Workday entries must not be fetched by discovery")
+            pass
+        async def fetch_jobs(self, _company_name, tenant, _config, **_kwargs):
+            workday_fetched.append(tenant.tenant)
+            return []
+        async def close(self):
+            pass
 
     monkeypatch.setattr("app.main.GreenhouseScout", ScoutStub)
     monkeypatch.setattr("app.main.WorkdayScout", WorkdayMustNotFetch)
-    assert asyncio.run(discover(config)) == []
+    assert asyncio.run(discover(config, dry_run=True)) == []
     assert fetched == ["mongodb"]
+    assert workday_fetched == ["walmart"]
