@@ -119,7 +119,7 @@ def test_discovery_fetches_verified_boards_without_real_http(monkeypatch):
         def __init__(self, **_kwargs):
             pass
 
-        async def fetch_jobs(self, identifier):
+        async def fetch_jobs(self, identifier, **_kwargs):
             fetched.append(identifier)
             return []
 

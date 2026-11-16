@@ -442,7 +442,7 @@ def test_company_fetch_failure_does_not_discard_other_company_results(monkeypatc
         def __init__(self, **_kwargs):
             pass
 
-        async def fetch_jobs(self, board):
+        async def fetch_jobs(self, board, **_kwargs):
             if board == "failed_test_token":
                 raise httpx.ConnectError("offline")
             return [{"canonical_url": "https://example.org/job", "title": "Engineer", "company": board,

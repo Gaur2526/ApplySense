@@ -803,7 +803,7 @@ def test_remembered_rejection_reuse_requires_matching_settings_hash(
         def __init__(self, **_kwargs):
             pass
         async def fetch_jobs(self, _company, _tenant, _config, *, known_source_ids=None,
-                             recently_evaluated_source_ids=None, baseline_mode=False):
+                             recently_evaluated_source_ids=None, baseline_mode=False, run_time=None):
             observed.append(set(recently_evaluated_source_ids or ()))
             return []
         async def close(self):
@@ -928,7 +928,7 @@ def test_workday_jobs_use_existing_pipeline_persistence_and_notification_claims(
         for i in (0, 1)
     ]
     discovery_calls = 0
-    async def fake_discover(_config, *, stats=None, include_rejected=False, dry_run=False, force=False):
+    async def fake_discover(_config, *, stats=None, include_rejected=False, dry_run=False, force=False, **_kwargs):
         nonlocal discovery_calls
         discovery_calls += 1
         if stats is not None:
@@ -1058,7 +1058,7 @@ def test_workday_jobs_use_run_dry_run_and_explain_without_database_or_telegram(t
         "canonical_url": "https://jobs.example.test/R-202", "content_hash": "f" * 64,
         "experience_requirement": 1, "posted_at": None, "uncertainty_reasons": [],
     }
-    async def fake_discover(_config, *, stats=None, include_rejected=False, dry_run=False, force=False):
+    async def fake_discover(_config, *, stats=None, include_rejected=False, dry_run=False, force=False, **_kwargs):
         assert include_rejected is True
         assert dry_run is True
         if stats is not None:
@@ -1297,7 +1297,7 @@ def test_one_failing_workday_tenant_does_not_stop_other_sources(tmp_path, monkey
     class GreenhouseStub:
         def __init__(self, **_kwargs):
             pass
-        async def fetch_jobs(self, _board):
+        async def fetch_jobs(self, _board, **_kwargs):
             return [dict(greenhouse_job)]
         async def close(self):
             pass

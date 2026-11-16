@@ -218,11 +218,13 @@ class GreenhouseScout(Scout):
         if self._owns_client:
             await self.client.aclose()
 
-    async def fetch_jobs(self, board: str) -> list[dict]:
+    async def fetch_jobs(
+        self, board: str, *, run_time: datetime | None = None
+    ) -> list[dict]:
         if not isinstance(board, str) or not board.strip():
             raise ValueError("Greenhouse board token must not be empty")
         url = API.format(board=board.strip())
-        run_time = datetime.now(timezone.utc)
+        run_time = run_time or datetime.now(timezone.utc)
         async with self._semaphore:
             for attempt in range(self.retries + 1):
                 try:

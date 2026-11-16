@@ -61,7 +61,8 @@ def _notification_priority(
 
 
 def filter_jobs(
-    jobs: list[dict], config: AppConfig, *, preserve_workday_context: bool = False
+    jobs: list[dict], config: AppConfig, *, preserve_workday_context: bool = False,
+    run_time: datetime | None = None,
 ) -> list[dict]:
     filters = config.filters
     selected: list[dict] = []
@@ -70,6 +71,7 @@ def filter_jobs(
         _individual, pipeline, _first_rejection = evaluate_filter_decisions(
             job, config,
             location_assume_country=job.get("_workday_assume_country"),
+            run_time=run_time,
         )
         decisions = list(pipeline.values())
         if any(decision.status is FilterStatus.REJECT for decision in decisions):
@@ -120,6 +122,7 @@ async def _discover_workday(
     dry_run: bool,
     force: bool,
     baseline_mode: bool = False,
+    run_time: datetime | None = None,
 ) -> list[dict]:
     engine = None
     factory = None
@@ -187,6 +190,7 @@ async def _discover_workday(
                         known_source_ids=known_ids,
                         recently_evaluated_source_ids=recent_ids,
                         baseline_mode=baseline_mode,
+                        run_time=run_time,
                     )
                 except Exception as exc:
                     LOG.error(
@@ -259,14 +263,16 @@ async def discover(
     dry_run: bool = False,
     force: bool = False,
     baseline_mode: bool = False,
+    run_time: datetime | None = None,
 ) -> list[dict]:
+    run_time = run_time or datetime.now(timezone.utc)
     companies = verified_greenhouse_entries(load_registry(config.company_registry_path))
     if not companies:
         LOG.info("No verified Greenhouse companies with board identifiers are configured")
     scout = GreenhouseScout(timeout=config.scout.request_timeout_seconds, retries=config.scout.retries, concurrency=config.scout.concurrency)
     try:
         results = await asyncio.gather(
-            *(scout.fetch_jobs(company.board_identifier) for company in companies),
+            *(scout.fetch_jobs(company.board_identifier, run_time=run_time) for company in companies),
             return_exceptions=True,
         )
         jobs: list[dict] = []
@@ -291,12 +297,13 @@ async def discover(
                 dry_run=dry_run,
                 force=force,
                 baseline_mode=baseline_mode,
+                run_time=run_time,
             ))
         # A role can appear under multiple boards; canonical URLs are the source
         # of identity for both in-memory dry runs and persisted discovery.
         unique: dict[str, dict] = {}
         filtered = filter_jobs(
-            jobs, config, preserve_workday_context=include_rejected
+            jobs, config, preserve_workday_context=include_rejected, run_time=run_time
         )
         if stats is not None:
             stats["filtered"] = len(filtered)
@@ -330,6 +337,7 @@ def run(
         raise ValueError("limit must not be negative")
     if explain and not dry_run:
         raise ValueError("--explain requires --dry-run")
+    run_time = datetime.now(timezone.utc)
     workday_entries = verified_workday_entries(load_registry(config.company_registry_path))
     if not dry_run or (workday_entries and _sqlite_database_exists(config.database_url)):
         # Check or create the database before discovery makes any network calls.
@@ -348,19 +356,22 @@ def run(
             "include_rejected": explain,
             "dry_run": dry_run,
             "force": force,
+            "run_time": run_time,
         }
         if baseline_mode:
             discover_kwargs["baseline_mode"] = True
         jobs = asyncio.run(discover(config, **discover_kwargs))
     elif explain:
-        jobs = asyncio.run(discover(config, stats=discovery_stats, include_rejected=True))
+        jobs = asyncio.run(discover(
+            config, stats=discovery_stats, include_rejected=True, run_time=run_time
+        ))
     else:
-        jobs = asyncio.run(discover(config, stats=discovery_stats))
+        jobs = asyncio.run(discover(config, stats=discovery_stats, run_time=run_time))
     if limit is not None:
         jobs = jobs[:limit]
     if dry_run:
         if explain:
-            print(format_filter_diagnostics(jobs, config))
+            print(format_filter_diagnostics(jobs, config, run_time=run_time))
             return len(jobs)
         LOG.info("Dry-run: %d unique matching jobs fetched; database and Telegram are untouched", len(jobs))
         for job in jobs:

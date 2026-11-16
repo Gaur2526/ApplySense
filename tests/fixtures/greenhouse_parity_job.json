@@ -1,0 +1,15 @@
+{
+  "id": 8220001,
+  "internal_job_id": 10001,
+  "requisition_id": "ENG-10001",
+  "title": "Software Engineer",
+  "company_name": "Example Greenhouse Co",
+  "first_published": "2026-11-15T08:00:00-04:00",
+  "updated_at": "2026-11-15T08:00:00-04:00",
+  "location": {"name": "Bengaluru, India"},
+  "absolute_url": "https://boards.greenhouse.io/example/jobs/8220001",
+  "content": "Minimum Qualifications: 1 year of software engineering experience.",
+  "metadata": [
+    {"id": 1, "name": "Employment Type", "value": "Full time", "value_type": "single_select"}
+  ]
+}
