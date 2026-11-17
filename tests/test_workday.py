@@ -13,7 +13,9 @@ from sqlalchemy.orm import Session
 import app.cli as cli
 import app.main as main
 import app.scouts.workday as workday
-from app.companies.registry import CompanyEntry, WorkdayTenantConfig
+from app.companies.registry import (
+    CompanyEntry, WorkdayTenantConfig, load_registry, verified_workday_entries,
+)
 from app.config import AppConfig
 from app.diagnostics import format_filter_diagnostics
 from app.database.connection import initialize_database
@@ -337,6 +339,72 @@ def test_explain_keeps_workday_assumed_country_for_location_diagnostics():
     )
     assert "location: PASS=0 UNCERTAIN=1 REJECT=0" in report
     assert "Unrecognized locations (top 25):\n  None" in report
+
+
+def test_live_walmart_registry_assumption_survives_real_discovery_and_explain(tmp_path, monkeypatch):
+    registry_path = Path("data/company_registry.json")
+    registry = load_registry(registry_path)
+    walmart = next(entry for entry in verified_workday_entries(registry) if entry.company_name == "Walmart")
+    assert walmart.workday is not None and walmart.workday.assume_country == "IN"
+
+    posting = copy.deepcopy(LIST_FIXTURE["jobPostings"][0])
+    posting["title"] = "Software Engineer"
+    posting["locationsText"] = "2 Locations"
+    posting["postedOn"] = "Posted 2 Days Ago"
+    details = copy.deepcopy(DETAIL_FIXTURE)
+    details["jobPostingInfo"].update({
+        "title": "Software Engineer",
+        "location": "2 Locations",
+        "jobDescription": "Minimum Qualifications: 1 year of software engineering experience.",
+        "startDate": "2026-11-14",
+    })
+    # This is the live shape that relies on the registry's assumed country.
+    details["jobPostingInfo"].pop("jobRequisitionLocation", None)
+
+    def handler(request):
+        if request.method == "POST":
+            return httpx.Response(200, json=list_response([posting], total=203), request=request)
+        return httpx.Response(200, json=details, request=request)
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=1)
+
+    def actual_workday_scout(**kwargs):
+        return WorkdayScout(
+            client=http_client,
+            timeout=kwargs.get("timeout", 15),
+            retries=kwargs.get("retries", 3),
+            request_interval_seconds=0,
+        )
+
+    class NoNetworkGreenhouseScout:
+        def __init__(self, **_kwargs):
+            pass
+        async def fetch_jobs(self, _board, **_kwargs):
+            return []
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(main, "WorkdayScout", actual_workday_scout)
+    monkeypatch.setattr(main, "GreenhouseScout", NoNetworkGreenhouseScout)
+    fixed_run = datetime(2026, 11, 16, 12, tzinfo=timezone.utc)
+    cfg = AppConfig(
+        database_url=f"sqlite:///{tmp_path / 'must-stay-absent.db'}",
+        company_registry_path=str(registry_path),
+        filters=config().filters,
+    )
+    try:
+        jobs = run_async(main.discover(
+            cfg, include_rejected=True, dry_run=True, force=True, run_time=fixed_run
+        ))
+        walmart_job = next(job for job in jobs if job["source"] == "workday")
+        assert walmart_job["location"] == "2 Locations"
+        assert walmart_job["_workday_assume_country"] == "IN"
+        report = format_filter_diagnostics(jobs, cfg, run_time=fixed_run)
+        assert "location: PASS=0 UNCERTAIN=1 REJECT=0" in report
+        assert "Unrecognized locations (top 25):\n  None" in report
+    finally:
+        run_async(http_client.aclose())
+    assert not (tmp_path / "must-stay-absent.db").exists()
 
 
 def test_workday_assumed_country_makes_generic_unrecognized_locations_uncertain():
