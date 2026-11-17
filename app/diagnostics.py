@@ -21,9 +21,11 @@ def format_filter_diagnostics(
     unrecognized_locations: Counter[str] = Counter()
     unrecognized_location_sources: dict[str, Counter[str]] = {}
     age_only_rejections = []
+    location_decisions = []
 
     for job in jobs:
         individual, pipeline, first = evaluate_filter_decisions(job, config, run_time=run_time)
+        location_decisions.append((job, individual["location"]))
         for name, decision in individual.items():
             counts[name][decision.status.value] += 1
         if first:
@@ -102,6 +104,15 @@ def format_filter_diagnostics(
             f"  {job.get('title') or 'Untitled'} — {job.get('company') or 'Unknown company'} — "
             f"{job.get('location') or 'Unspecified'} — {age_text} days — "
             f"age_source={job.get('age_source') or 'unknown'}"
+        )
+
+    lines.extend(["", "Location decisions (all jobs):"])
+    if not jobs:
+        lines.append("  None")
+    for job, decision in location_decisions:
+        lines.append(
+            f"  {job.get('title') or 'Untitled'} — {job.get('company') or 'Unknown company'} — "
+            f"{job.get('location') or 'Unspecified'} — {decision.status.value}: {decision.reason}"
         )
 
     lines.extend(["", f"India-located jobs ({len(india_jobs)}):"])
