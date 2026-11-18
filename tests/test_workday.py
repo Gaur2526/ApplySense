@@ -330,15 +330,15 @@ def test_explain_keeps_workday_assumed_country_for_location_diagnostics():
         "title": "Software Engineer", "location": "2 Locations",
         "employment_type": "full-time", "description": "Requirements: 1 year of experience",
         "canonical_url": "https://jobs.example.test/R-MULTI", "content_hash": "7" * 64,
-        "experience_requirement": 1, "posted_at": None, "_workday_assume_country": "IN",
+        "experience_requirement": 1, "posted_at": None,
     }
     prepared = main.filter_jobs([item], cfg, preserve_workday_context=True)
-    assert prepared[0]["_workday_assume_country"] == "IN"
     report = format_filter_diagnostics(
         prepared, cfg, run_time=datetime(2026, 11, 16, 12, tzinfo=timezone.utc)
     )
     assert "location: PASS=0 UNCERTAIN=1 REJECT=0" in report
     assert "Unrecognized locations (top 25):\n  None" in report
+    assert "branch=workday, assume_country=IN" in report
 
 
 def test_live_walmart_registry_assumption_survives_real_discovery_and_explain(tmp_path, monkeypatch):
@@ -398,7 +398,7 @@ def test_live_walmart_registry_assumption_survives_real_discovery_and_explain(tm
         ))
         walmart_job = next(job for job in jobs if job["source"] == "workday")
         assert walmart_job["location"] == "2 Locations"
-        assert walmart_job["_workday_assume_country"] == "IN"
+        assert "_workday_assume_country" not in walmart_job
         report = format_filter_diagnostics(jobs, cfg, run_time=fixed_run)
         assert "location: PASS=0 UNCERTAIN=1 REJECT=0" in report
         assert "Unrecognized locations (top 25):\n  None" in report
@@ -1380,7 +1380,6 @@ def test_one_failing_workday_tenant_does_not_stop_other_sources(tmp_path, monkey
                 "title": "Software Engineer", "location": "IN KA BANGALORE", "employment_type": "full-time",
                 "description": "Requirements: 1 year of experience.", "canonical_url": "https://example.test/wd",
                 "content_hash": "b" * 64, "experience_requirement": 1, "posted_at": None,
-                "_workday_assume_country": "IN",
             }
             return [WorkdayEvaluation("good/R-1", "PASS", "passed", job)]
         async def close(self):

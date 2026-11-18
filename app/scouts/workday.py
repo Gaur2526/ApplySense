@@ -282,7 +282,6 @@ def normalize_workday_job(
         "age_days": resolved_age,
     }
     job = JobSchema.model_validate(normalized).to_orm_dict()
-    job["_workday_assume_country"] = tenant.assume_country
     if country_code is not None:
         job["_workday_location_country"] = country_code.strip().upper()
     if start_date is None and list_job.get("_age_unknown_is_uncertain"):
@@ -511,7 +510,7 @@ class WorkdayScout:
             elif disagreement == "real":
                 real_age_disagreements += 1
             _individual, pipeline, _first_rejection = evaluate_filter_decisions(
-                job, config, location_assume_country=tenant.assume_country, run_time=run_time
+                job, config, run_time=run_time
             )
             rejected = next(
                 (decision for decision in pipeline.values() if decision.status is FilterStatus.REJECT),

@@ -69,9 +69,7 @@ def filter_jobs(
     preferred_cities = list(dict.fromkeys([*filters.preferred_cities, *filters.locations]))
     for job in jobs:
         _individual, pipeline, _first_rejection = evaluate_filter_decisions(
-            job, config,
-            location_assume_country=job.get("_workday_assume_country"),
-            run_time=run_time,
+            job, config, run_time=run_time,
         )
         decisions = list(pipeline.values())
         if any(decision.status is FilterStatus.REJECT for decision in decisions):
@@ -87,7 +85,6 @@ def filter_jobs(
         if job.get("experience_requirement") is None:
             job["experience_requirement"] = None
         if not preserve_workday_context:
-            job.pop("_workday_assume_country", None)
             job.pop("_workday_location_country", None)
         selected.append(job)
     return sorted(selected, key=lambda job: preferred_city_rank(job, preferred_cities))

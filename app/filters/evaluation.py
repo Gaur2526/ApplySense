@@ -1,5 +1,9 @@
 """Shared filter evaluation used by discovery and dry-run diagnostics."""
+from functools import lru_cache
+from pathlib import Path
+
 from app.config import AppConfig
+from app.companies.registry import load_registry, verified_workday_entries
 from app.filters.decision import FilterDecision, FilterStatus
 from app.filters.age_filter import matches_age
 from app.filters.employment_filter import matches_employment
@@ -11,17 +15,51 @@ from app.filters.seniority_filter import matches_seniority
 FILTER_NAMES = ("keyword", "excluded keyword", "seniority", "location", "experience", "employment", "age")
 
 
+@lru_cache(maxsize=8)
+def _registry_for_path(path: str, modified_ns: int):
+    # Include mtime in the cache key so edits to the registry take effect in
+    # long-running processes without repeatedly parsing the JSON file.
+    del modified_ns
+    return load_registry(path)
+
+
+def location_evaluation_context(job: dict, config: AppConfig) -> tuple[str, str | None]:
+    """Return the location branch and registry-derived assumed country.
+
+    Workday source IDs are stored as ``<tenant>/<requisition-id>``. Resolving
+    from that stable identity keeps the policy available to persisted jobs,
+    even when no transient scout fields are present.
+    """
+    if str(job.get("source") or "").casefold() != "workday":
+        return "generic", None
+    source_id = str(job.get("source_id") or "")
+    tenant_key = source_id.split("/", 1)[0].strip().casefold()
+    if not tenant_key:
+        return "workday", None
+    registry_path = Path(config.company_registry_path)
+    try:
+        modified_ns = registry_path.stat().st_mtime_ns
+    except OSError:
+        return "workday", None
+    entries = verified_workday_entries(
+        _registry_for_path(str(registry_path.resolve()), modified_ns)
+    )
+    for entry in entries:
+        tenant = entry.workday
+        if tenant is not None and tenant.tenant.casefold() == tenant_key:
+            return "workday", tenant.assume_country
+    return "workday", None
+
+
 def evaluate_filter_decisions(
     job: dict,
     config: AppConfig,
     *,
-    location_assume_country: str | None = None,
     run_time=None,
 ) -> tuple[dict[str, FilterDecision], dict[str, FilterDecision], str | None]:
     """Return individual diagnostic decisions, pipeline decisions, and first rejection filter."""
     filters = config.filters
-    if location_assume_country is None:
-        location_assume_country = job.get("_workday_assume_country")
+    location_branch, location_assume_country = location_evaluation_context(job, config)
     if job.get("experience_requirement") is None:
         job["experience_requirement"] = parse_experience_requirement(
             f"{job.get('title', '')} {job.get('description', '')}"
@@ -31,7 +69,7 @@ def evaluate_filter_decisions(
     excluded = matches_keywords(job, [], filters.excluded_keywords)
     seniority = matches_seniority(job, filters.seniority_titles)
     experience = matches_experience(job, filters.max_min_years)
-    if job.get("source") == "workday":
+    if location_branch == "workday":
         location = matches_workday_location(
             job, filters.unknown_location_policy, location_assume_country
         )

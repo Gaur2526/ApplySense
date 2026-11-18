@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 from app.config import AppConfig
 from app.filters.decision import FilterStatus
 from app.filters.age_filter import age_days_at
-from app.filters.evaluation import FILTER_NAMES, evaluate_filter_decisions
+from app.filters.evaluation import (
+    FILTER_NAMES, evaluate_filter_decisions, location_evaluation_context,
+)
 from app.filters.location_filter import is_india_location
 
 
@@ -25,7 +27,7 @@ def format_filter_diagnostics(
 
     for job in jobs:
         individual, pipeline, first = evaluate_filter_decisions(job, config, run_time=run_time)
-        location_decisions.append((job, individual["location"]))
+        location_decisions.append((job, individual["location"], location_evaluation_context(job, config)))
         for name, decision in individual.items():
             counts[name][decision.status.value] += 1
         if first:
@@ -109,10 +111,11 @@ def format_filter_diagnostics(
     lines.extend(["", "Location decisions (all jobs):"])
     if not jobs:
         lines.append("  None")
-    for job, decision in location_decisions:
+    for job, decision, (branch, assume_country) in location_decisions:
         lines.append(
             f"  {job.get('title') or 'Untitled'} — {job.get('company') or 'Unknown company'} — "
-            f"{job.get('location') or 'Unspecified'} — {decision.status.value}: {decision.reason}"
+            f"{job.get('location') or 'Unspecified'} — {decision.status.value} "
+            f"[branch={branch}, assume_country={assume_country or 'none'}]: {decision.reason}"
         )
 
     lines.extend(["", f"India-located jobs ({len(india_jobs)}):"])
