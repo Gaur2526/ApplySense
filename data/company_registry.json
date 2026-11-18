@@ -339,7 +339,7 @@
     "company_name": "Salesforce",
     "ats_provider": "workday",
     "board_identifier": null,
-    "status": "pending_verification",
+    "status": "verified",
     "careers_url": null,
     "workday": {
       "host": "salesforce.wd12.myworkdayjobs.com",
