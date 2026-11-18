@@ -1,5 +1,6 @@
 import html
 import re
+from datetime import date, datetime, timezone
 from urllib.parse import quote
 
 from app.filters.age_filter import age_days_at
@@ -119,6 +120,19 @@ def format_job(job: dict, *, limit: int = 4096, run_time=None) -> str:
         else:
             unit = "day" if age_days == 1 else "days"
             lines.append(f"{age_source} {age_days} {unit} ago")
+    apply_by = job.get("apply_by")
+    if apply_by is not None:
+        if isinstance(apply_by, str):
+            try:
+                apply_by = date.fromisoformat(apply_by[:10])
+            except ValueError:
+                apply_by = None
+        if isinstance(apply_by, datetime):
+            apply_by = apply_by.date()
+        if isinstance(apply_by, date):
+            today = (run_time or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
+            days_left = max(0, (apply_by - today).days - 1)
+            lines.append(f"Apply by {apply_by.strftime('%b')} {apply_by.day} ({days_left} days left)")
     if job.get("experience_requirement") is not None:
         lines.append(f"Experience: {job['experience_requirement']}+ years")
     checks = _uncertainty_labels(job)

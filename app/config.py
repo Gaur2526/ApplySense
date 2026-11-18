@@ -37,6 +37,8 @@ class FilterConfig(StrictModel):
     seniority_titles: list[str] = Field(default_factory=lambda: [
         "senior", "sr", "lead", "staff", "principal", "manager", "head",
         "architect", "director", "vp", "vice president", "chief",
+        "smts", "lmts", "pmts", "senior member of technical staff",
+        "lead member of technical staff", "principal member of technical staff",
     ])
     locations: list[str] = Field(default_factory=list)
     preferred_cities: list[str] = Field(default_factory=list)
@@ -46,6 +48,14 @@ class FilterConfig(StrictModel):
     baseline_include_recent: bool = False
     max_min_years: int = Field(default=2, ge=0, le=50)
     employment_types: list[str] = Field(default_factory=lambda: ["full-time"])
+    experience_requirement_headings: list[str] = Field(default_factory=lambda: [
+        "Requirements", "Basic Qualifications", "Required Qualifications",
+        "Minimum Qualifications", "What You Bring", "You're Our Person If",
+        "Our Ideal Candidate",
+    ])
+    experience_preferred_headings: list[str] = Field(default_factory=lambda: [
+        "Preferred Qualifications", "Nice to Have", "Bonus", "Even Better", "Even Better If",
+    ])
 
     @field_validator("keywords")
     @classmethod

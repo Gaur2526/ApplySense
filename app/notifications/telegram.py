@@ -64,11 +64,12 @@ async def send_jobs(
     dry_run: bool = False,
     client: httpx.AsyncClient | None = None,
     message_delay: float = MESSAGE_DELAY_SECONDS,
+    run_time=None,
 ) -> list[bool]:
     """Send each job independently and return one confirmed result per job."""
     if dry_run:
         for job in jobs:
-            LOG.info("Telegram dry-run message:\n%s", format_job(job))
+            LOG.info("Telegram dry-run message:\n%s", format_job(job, run_time=run_time))
         return [False for _ in jobs]
 
     owns_client = client is None
@@ -78,7 +79,9 @@ async def send_jobs(
         for index, job in enumerate(jobs):
             if index:
                 await asyncio.sleep(message_delay)
-            results.append(await _send_text(bot_token, chat_id, format_job(job), client=active_client))
+            results.append(await _send_text(
+                bot_token, chat_id, format_job(job, run_time=run_time), client=active_client
+            ))
     finally:
         if owns_client:
             await active_client.aclose()

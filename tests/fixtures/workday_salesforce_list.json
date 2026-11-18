@@ -1,0 +1,33 @@
+{
+  "total": 59,
+  "jobPostings": [
+    {
+      "title": "Data Engineering SMTS/LMTS",
+      "externalPath": "/job/India---Hyderabad/Data-Engineering-SMTS-LMTS--Revenue-Analytics_JR364686",
+      "locationsText": "India - Hyderabad",
+      "postedOn": "Posted Today",
+      "bulletFields": [
+        "JR364686"
+      ]
+    },
+    {
+      "title": "Salesforce Senior Technical Manager (Salesforce Technical Architect experience is mandatory)",
+      "externalPath": "/job/India---Hyderabad/Salesforce-Senior-Technical-Manager_JR327146",
+      "locationsText": "2 Locations",
+      "postedOn": "Posted Today",
+      "bulletFields": [
+        "JR327146"
+      ]
+    },
+    {
+      "title": "Salesforce Senior Technical Consultant (SF B2B Commerce Cloud exp mandatory)",
+      "externalPath": "/job/India---Bangalore/Salesforce-Senior-Technical-Consultant--SF-B2B-Commerce-Cloud-exp-mandatory-_JR368748",
+      "locationsText": "4 Locations",
+      "postedOn": "Posted Today",
+      "bulletFields": [
+        "JR368748"
+      ]
+    }
+  ],
+  "userAuthenticated": false
+}

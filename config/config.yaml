@@ -35,6 +35,10 @@ filters:
     - machine learning engineer
     - associate software engineer
     - forward deployed engineer
+    - software engineering
+    - member of technical staff
+    - mts
+    - amts
 
   excluded_keywords:
     - sales
@@ -42,7 +46,7 @@ filters:
     - marketing
     - recruiter
     - support
-  seniority_titles: [senior, sr, lead, staff, principal, manager, head, architect, director, vp, "vice president", chief, distinguished, fellow, executive]
+  seniority_titles: [senior, sr, lead, staff, principal, manager, head, architect, director, vp, "vice president", chief, distinguished, fellow, executive, smts, lmts, pmts, "senior member of technical staff", "lead member of technical staff", "principal member of technical staff"]
   locations: []
   preferred_cities: [Noida, Gurgaon, Gurugram, Delhi, Bengaluru, Bangalore, Hyderabad, Pune, Mumbai]
   max_min_years: 2

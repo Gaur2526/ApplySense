@@ -62,13 +62,19 @@ def evaluate_filter_decisions(
     location_branch, location_assume_country = location_evaluation_context(job, config)
     if job.get("experience_requirement") is None:
         job["experience_requirement"] = parse_experience_requirement(
-            f"{job.get('title', '')} {job.get('description', '')}"
+            f"{job.get('title', '')} {job.get('description', '')}",
+            required_headings=filters.experience_requirement_headings,
+            preferred_headings=filters.experience_preferred_headings,
         )
 
     keyword = matches_keywords(job, filters.keywords, [])
     excluded = matches_keywords(job, [], filters.excluded_keywords)
     seniority = matches_seniority(job, filters.seniority_titles)
-    experience = matches_experience(job, filters.max_min_years)
+    experience = matches_experience(
+        job, filters.max_min_years,
+        required_headings=filters.experience_requirement_headings,
+        preferred_headings=filters.experience_preferred_headings,
+    )
     if location_branch == "workday":
         location = matches_workday_location(
             job, filters.unknown_location_policy, location_assume_country

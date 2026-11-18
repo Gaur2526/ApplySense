@@ -334,5 +334,25 @@
     "board_identifier": null,
     "status": "pending_verification",
     "careers_url": null
+  },
+  {
+    "company_name": "Salesforce",
+    "ats_provider": "workday",
+    "board_identifier": null,
+    "status": "pending_verification",
+    "careers_url": null,
+    "workday": {
+      "host": "salesforce.wd12.myworkdayjobs.com",
+      "tenant": "salesforce",
+      "site": "External_Career_Site",
+      "country_facet_key": "CF_-_REC_-_LRV_-_Job_Posting_Anchor_-_Country_from_Job_Posting_Location_Extended",
+      "country_facet_id": "c4f78be1a8f14da0ab49ce1162348a5e",
+      "assume_country": "IN",
+      "search_texts": ["software"],
+      "page_size": 20,
+      "max_pages": 15,
+      "max_detail_requests_per_run": 30,
+      "min_interval_seconds": 3600
+    }
   }
 ]

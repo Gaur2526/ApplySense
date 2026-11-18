@@ -1,15 +1,17 @@
+import html
 import re
 from dataclasses import dataclass
 from typing import Any
 
 from app.filters.decision import FilterDecision, passed, rejected, uncertain
 
-REQUIREMENT_SECTION = re.compile(
-    r"\b(?:requirements?|minimum qualifications|(?<!preferred )qualifications?|"
-    r"(?:our\s+)?ideal candidate|"
-    r"what (?:we(?:'re| are)|you(?:'re| are)) looking for|"
-    r"what (?:you|we)(?:'ll| will) bring|your experience|experience requirements)\b\s*:?",
-    re.I,
+DEFAULT_REQUIRED_HEADINGS = (
+    "Requirements", "Basic Qualifications", "Required Qualifications",
+    "Minimum Qualifications", "What You Bring", "You're Our Person If",
+    "Our Ideal Candidate",
+)
+DEFAULT_PREFERRED_HEADINGS = (
+    "Preferred Qualifications", "Nice to Have", "Bonus", "Even Better", "Even Better If",
 )
 SECTION_END = re.compile(
     r"\b(?:responsibilities|what (?:you|we)(?:'ll| will) do|what we offer|benefits|"
@@ -18,7 +20,7 @@ SECTION_END = re.compile(
     re.I,
 )
 RANGE = re.compile(
-    r"(?P<minimum>\b\d{1,2})\s*(?:-|–|—|to)\s*\d{1,2}\s*(?:years?|yrs?)\b",
+    r"(?P<minimum>\b\d{1,2})\s*(?:-|–|—|to)\s*\d{1,2}\s*\+?\s*(?:years?|yrs?)\b",
     re.I,
 )
 MINIMUM = re.compile(
@@ -41,6 +43,11 @@ REQUIREMENT_CONTEXT = re.compile(
 REQUIRED_SUFFIX = re.compile(r"\b(?:required|required experience|minimum)\b", re.I)
 BOILERPLATE_PREFIX = re.compile(r"(?:over|more than|nearly|almost|around|for|founded|established)\s*$", re.I)
 SENTENCE_END = re.compile(r"[.!?;\n]")
+ROLE_COUNT_CLAUSE = re.compile(
+    r"\b(?:applying\s+for\s+)?(?:a\s+)?maximum\s+of\s+\d+\s+roles?\b[^.!?\n]*[.!?]?",
+    re.I,
+)
+ROLE_COUNT = re.compile(r"\b\d+\s+roles?\b", re.I)
 
 
 @dataclass(frozen=True)
@@ -50,18 +57,54 @@ class _ExperienceEvidence:
     alternatives: bool = False
 
 
-def _requirement_text(text: str) -> tuple[str, bool]:
-    normalized = (text or "").replace("’", "'")
-    headings = list(REQUIREMENT_SECTION.finditer(normalized))
+def _heading_pattern(headings: tuple[str, ...] | list[str]) -> re.Pattern[str] | None:
+    terms = [
+        re.escape(str(heading).strip()).replace(r"\ ", r"\s+")
+        for heading in headings if str(heading).strip()
+    ]
+    if not terms:
+        return None
+    alternatives = "|".join(sorted(terms, key=len, reverse=True))
+    return re.compile(r"(?<!\w)(?:" + alternatives + r")(?!\w)\s*[:.…]*", re.I)
+
+
+def _requirement_text(
+    text: str,
+    required_headings: tuple[str, ...] | list[str] = DEFAULT_REQUIRED_HEADINGS,
+    preferred_headings: tuple[str, ...] | list[str] = DEFAULT_PREFERRED_HEADINGS,
+) -> tuple[str, bool]:
+    normalized = text or ""
+    for _ in range(8):
+        decoded = html.unescape(normalized)
+        if decoded == normalized:
+            break
+        normalized = decoded
+    normalized = normalized.replace("’", "'")
+    normalized = ROLE_COUNT_CLAUSE.sub(" ", normalized)
+    normalized = ROLE_COUNT.sub(" ", normalized)
+    requirement_pattern = _heading_pattern(required_headings)
+    preferred_pattern = _heading_pattern(preferred_headings)
+    headings = list(requirement_pattern.finditer(normalized)) if requirement_pattern else []
     if not headings:
+        if preferred_pattern:
+            preferred = preferred_pattern.search(normalized)
+            if preferred:
+                return normalized[:preferred.start()], False
         return normalized, False
 
     blocks: list[str] = []
     for index, heading in enumerate(headings):
         start = heading.end()
         next_heading = headings[index + 1].start() if index + 1 < len(headings) else len(normalized)
+        boundaries = [next_heading]
         next_section = SECTION_END.search(normalized, start, next_heading)
-        end = next_section.start() if next_section else next_heading
+        if next_section:
+            boundaries.append(next_section.start())
+        if preferred_pattern:
+            preferred = preferred_pattern.search(normalized, start, next_heading)
+            if preferred:
+                boundaries.append(preferred.start())
+        end = min(boundaries)
         blocks.append(normalized[start:end])
     return " ".join(blocks), True
 
@@ -77,12 +120,24 @@ OPTION_BLOCK = re.compile(
 )
 
 
-def _experience_evidence(text: str, *, allow_alternatives: bool = True) -> _ExperienceEvidence:
-    source, has_requirement_section = _requirement_text(text)
+def _experience_evidence(
+    text: str,
+    *,
+    allow_alternatives: bool = True,
+    required_headings: tuple[str, ...] | list[str] = DEFAULT_REQUIRED_HEADINGS,
+    preferred_headings: tuple[str, ...] | list[str] = DEFAULT_PREFERRED_HEADINGS,
+) -> _ExperienceEvidence:
+    source, has_requirement_section = _requirement_text(
+        text, required_headings, preferred_headings
+    )
     options = list(OPTION_BLOCK.finditer(source)) if allow_alternatives else []
     if len(options) >= 2:
         option_evidence = [
-            _experience_evidence(f"Requirements: {option.group(1)}", allow_alternatives=False)
+            _experience_evidence(
+                f"Requirements: {option.group(1)}", allow_alternatives=False,
+                required_headings=required_headings,
+                preferred_headings=preferred_headings,
+            )
             for option in options
         ]
         if any(item.conflicting_values for item in option_evidence):
@@ -102,6 +157,8 @@ def _experience_evidence(text: str, *, allow_alternatives: bool = True) -> _Expe
 
     for pattern in (RANGE, MINIMUM, PLUS):
         for match in pattern.finditer(source):
+            if any(start <= match.start() < end for start, end in spans):
+                continue
             prefix = _sentence_prefix(source, match.start())
             if BOILERPLATE_PREFIX.search(prefix.strip()):
                 continue
@@ -139,9 +196,18 @@ def _experience_evidence(text: str, *, allow_alternatives: bool = True) -> _Expe
     return _ExperienceEvidence(minimum_years=ordered[0])
 
 
-def parse_experience_requirement(text: str) -> int | None:
+def parse_experience_requirement(
+    text: str,
+    *,
+    required_headings: tuple[str, ...] | list[str] = DEFAULT_REQUIRED_HEADINGS,
+    preferred_headings: tuple[str, ...] | list[str] = DEFAULT_PREFERRED_HEADINGS,
+) -> int | None:
     """Return an unambiguous minimum requirement; None means unknown or conflicting."""
-    evidence = _experience_evidence(text)
+    evidence = _experience_evidence(
+        text,
+        required_headings=required_headings,
+        preferred_headings=preferred_headings,
+    )
     return evidence.minimum_years
 
 
@@ -150,9 +216,19 @@ def extract_experience_years(text: str) -> int | None:
     return parse_experience_requirement(text)
 
 
-def matches_experience(job: dict[str, Any], max_min_years: int = 2) -> FilterDecision:
+def matches_experience(
+    job: dict[str, Any],
+    max_min_years: int = 2,
+    *,
+    required_headings: tuple[str, ...] | list[str] = DEFAULT_REQUIRED_HEADINGS,
+    preferred_headings: tuple[str, ...] | list[str] = DEFAULT_PREFERRED_HEADINGS,
+) -> FilterDecision:
     years = job.get("experience_requirement")
-    evidence = _experience_evidence(f"{job.get('title', '')} {job.get('description', '')}")
+    evidence = _experience_evidence(
+        f"{job.get('title', '')} {job.get('description', '')}",
+        required_headings=required_headings,
+        preferred_headings=preferred_headings,
+    )
     if years is None:
         years = evidence.minimum_years
     if job.get("experience_requirement") is None and evidence.conflicting_values:

@@ -23,26 +23,33 @@ PDF_COMPANY_NAMES = [
 def test_registry_contains_exactly_the_pdf_companies_once():
     entries = load_registry()
     names = [entry.company_name for entry in entries]
-    assert len(entries) == 46
+    assert len(entries) == 47
     assert len(names) == len(set(names))
-    assert names == PDF_COMPANY_NAMES
+    assert names[:46] == PDF_COMPANY_NAMES
+    assert names[46] == "Salesforce"
 
 
 def test_pending_companies_are_preserved_with_only_mongodb_and_walmart_verified():
     entries = load_registry()
-    assert len(entries) == 46
+    assert len(entries) == 47
     pending = [entry for entry in entries if entry.company_name not in {"MongoDB", "Walmart"}]
     assert all(entry.status == "pending_verification" for entry in pending)
     assert all(
         entry.ats_provider is None
-        for entry in pending
+        for entry in pending if entry.company_name != "Salesforce"
     )
-    assert all(entry.board_identifier is None for entry in pending)
+    assert all(
+        entry.board_identifier is None
+        for entry in pending if entry.company_name != "Salesforce"
+    )
     mongodb = next(entry for entry in entries if entry.company_name == "MongoDB")
     assert (mongodb.status, mongodb.ats_provider, mongodb.board_identifier) == ("verified", "greenhouse", "mongodb")
     assert verified_greenhouse_entries(entries) == [mongodb]
     walmart = next(entry for entry in entries if entry.company_name == "Walmart")
     assert verified_workday_entries(entries) == [walmart]
+    salesforce = next(entry for entry in entries if entry.company_name == "Salesforce")
+    assert salesforce.status == "pending_verification"
+    assert salesforce.workday is not None and salesforce.workday.tenant == "salesforce"
 
 
 def test_walmart_workday_settings_are_configured_and_verified():

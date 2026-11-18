@@ -9,7 +9,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urlsplit
@@ -22,7 +22,10 @@ from app.config import AppConfig
 from app.filters.decision import FilterStatus
 from app.filters.age_filter import age_days_at
 from app.filters.evaluation import evaluate_filter_decisions
-from app.filters.experience_filter import parse_experience_requirement
+from app.filters.experience_filter import (
+    DEFAULT_PREFERRED_HEADINGS, DEFAULT_REQUIRED_HEADINGS,
+    parse_experience_requirement,
+)
 from app.scouts.greenhouse import RETRYABLE_STATUS_CODES
 from app.scouts.retry import (
     DEFAULT_BACKOFF_CAP_SECONDS, DEFAULT_BACKOFF_SECONDS,
@@ -218,6 +221,17 @@ def _posted_at(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _apply_by(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).date() if value.tzinfo else value.date()
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return date.fromisoformat(value.strip()[:10])
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _posted_age_disagreement(
     label: str, label_age: int | None, start_date_age: int | None
 ) -> str | None:
@@ -248,6 +262,8 @@ def normalize_workday_job(
     tenant: WorkdayTenantConfig,
     *,
     run_time: datetime | None = None,
+    required_experience_headings: list[str] | None = None,
+    preferred_experience_headings: list[str] | None = None,
 ) -> dict[str, Any]:
     info = detail_payload.get("jobPostingInfo")
     if not isinstance(info, dict):
@@ -277,6 +293,7 @@ def normalize_workday_job(
         external_url = f"https://{tenant.host}/{tenant.site}{list_job['external_path']}"
     canonical_url = normalize_url(external_url)
     start_date = _posted_at(info.get("startDate"))
+    apply_by = _apply_by(info.get("endDate"))
     label_age = list_job.get("age_days")
     detail_age = age_days_at({"posted_at": start_date}, run_time) if start_date is not None else None
     resolved_age = detail_age if detail_age is not None else label_age
@@ -290,9 +307,14 @@ def normalize_workday_job(
         "description": description,
         "canonical_url": canonical_url,
         "content_hash": content_hash(title, location, description),
-        "experience_requirement": parse_experience_requirement(f"{title} {description}"),
+        "experience_requirement": parse_experience_requirement(
+            f"{title} {description}",
+            required_headings=required_experience_headings or DEFAULT_REQUIRED_HEADINGS,
+            preferred_headings=preferred_experience_headings or DEFAULT_PREFERRED_HEADINGS,
+        ),
         # Workday startDate is retained as informational posted_at, never a filter.
         "posted_at": start_date,
+        "apply_by": apply_by,
         "age_source": "posted" if resolved_age is not None else None,
         "age_days": resolved_age,
     }
@@ -331,6 +353,7 @@ class WorkdayScout:
         self.rate_limit_retry_after: str | None = None
         self.rate_limit_retry_after_seconds: float | None = None
         self.pending_details_count = 0
+        self.closed_count = 0
         self._unknown_age_labels_logged: set[str] = set()
 
     async def close(self) -> None:
@@ -437,7 +460,7 @@ class WorkdayScout:
     ) -> tuple[int, list[dict[str, Any]]]:
         url = f"{self._base_url(tenant)}/jobs"
         body = {
-            "appliedFacets": {"locationCountry": [tenant.country_facet_id]},
+            "appliedFacets": {tenant.country_facet_key: [tenant.country_facet_id]},
             "limit": tenant.page_size,
             "offset": offset,
             "searchText": search_text,
@@ -513,6 +536,7 @@ class WorkdayScout:
         self.rate_limit_retry_after = None
         self.rate_limit_retry_after_seconds = None
         self.pending_details_count = 0
+        self.closed_count = 0
         known = known_source_ids or set()
         recently_evaluated = recently_evaluated_source_ids or set()
         list_jobs = await self.list_jobs(company_name, tenant)
@@ -579,7 +603,11 @@ class WorkdayScout:
                 # from the list feed on the next run.
                 continue
             try:
-                job = normalize_workday_job(item, detail_payload, tenant, run_time=run_time)
+                job = normalize_workday_job(
+                    item, detail_payload, tenant, run_time=run_time,
+                    required_experience_headings=config.filters.experience_requirement_headings,
+                    preferred_experience_headings=config.filters.experience_preferred_headings,
+                )
             except (ValueError, ValidationError) as exc:
                 reason = str(exc)
                 LOG.warning("Skipping Workday job tenant=%s source_id=%s: %s", tenant.tenant, item["source_id"], reason)
@@ -595,6 +623,16 @@ class WorkdayScout:
                 )
             elif disagreement == "real":
                 real_age_disagreements += 1
+            run_utc = run_time if run_time.tzinfo else run_time.replace(tzinfo=timezone.utc)
+            apply_by = job.get("apply_by")
+            if apply_by is not None and apply_by < run_utc.astimezone(timezone.utc).date():
+                self.closed_count += 1
+                evaluations.append(WorkdayEvaluation(
+                    item["source_id"], FilterStatus.REJECT.value,
+                    f"closed: application deadline {apply_by.isoformat()} has passed.",
+                    job,
+                ))
+                continue
             _individual, pipeline, _first_rejection = evaluate_filter_decisions(
                 job, config, run_time=run_time
             )

@@ -1,0 +1,76 @@
+{
+    "jobPostingInfo": {
+        "id": "f23413c0c23f100657cc1b3250580000",
+        "title": "Data Engineering SMTS/LMTS",
+        "jobDescription": "<p style=\"text-align:left\"><i>To get the best candidate experience, please consider applying for a maximum of 3 roles within 12 months to ensure you are not duplicating efforts.</i></p><p style=\"text-align:inherit\"></p><p style=\"text-align:left\"><span class=\"emphasis-3\">Job Category</span></p>Software Engineering<p style=\"text-align:inherit\"></p><p style=\"text-align:left\"><span class=\"emphasis-3\">Job Details</span></p><p style=\"text-align:inherit\"></p><p style=\"text-align:left\"><span class=\"emphasis-3\"><b><b>About Salesforce</b></b></span></p><p>Salesforce is the #1 AI CRM, where humans with agents drive customer success together. Here, ambition meets action. Tech meets trust. And innovation isn’t a buzzword — it’s a way of life. The world of work as we know it is changing and we&#39;re looking for Trailblazers who are passionate about bettering business and the world through AI, driving innovation, and keeping Salesforce&#39;s core values at the heart of it all.</p><p></p><p>Ready to level-up your career at the company leading workforce transformation in the agentic era? You’re in the right place! Agentforce is the future of AI, and you are the future of Salesforce.</p><p></p><p></p><p></p><p><span style=\"color:#1d1c1d\"><b>The Experience</b><br /><br />The Revenue Analytics team builds the data platforms, intelligent products, application capabilities, and AI-enabled automation that power enterprise decision-making. We combine deep engineering expertise with business context to deliver trusted, scalable systems for both human and agent-driven workflows.<br /><br />We partner with business and technology leaders to solve complex challenges through modern data architecture, governed data products, and agentic systems, emphasizing production reliability, measurable business value, and responsible automation.<br /><br />We are seeking a Lead Member of Technical Staff (LMTS) to be a hands-on technical execution lead across our core data platform and its application integration interfaces. Working within the architecture set by Principal Engineers, you will own delivery of high-impact data engineering projects, mentor senior engineers, and turn complex requirements into production-ready software.<br /><br /><b>What You&#39;ll Actually Be Doing</b><br /></span></p><ul><li style=\"color:#1d1c1d !important\"><span style=\"color:#1d1c1d\">Lead design, delivery and optimization of end-to-end batch and event-driven data pipelines, writing production code and guiding the team to ship scalable data products on schedule</span></li><li style=\"color:#1d1c1d !important\"><span style=\"color:#1d1c1d\">Define patterns and standards for data ingestion, transformation, orchestration, storage, data contracts and lineage using Python, SQL, dbt, Snowflake and Airflow</span></li><li style=\"color:#1d1c1d !important\"><span style=\"color:#1d1c1d\">Build API integrations, Node.js services and middleware that connect the data platform to applications, dashboards and enterprise platforms (Salesforce, AWS), including enterprise-controlled agentic workflows and MCP servers</span></li><li style=\"color:#1d1c1d !important\"><span style=\"color:#1d1c1d\">Establish testing, CI/CD, observability and SLOs/SLAs for reliability, and mentor Senior and Associate Engineers through code and design reviews</span></li></ul><p><span style=\"color:#1d1c1d\"><br /><br /><b>You&#39;re Our Person If...</b><br /></span></p><ul><li style=\"color:#1d1c1d !important\"><span style=\"color:#1d1c1d\">10 to 14&#43; years in Data, Software or Platform Engineering (or equivalent depth), with a proven record of leading complex data projects from requirements through deployment and operation</span></li><li style=\"color:#1d1c1d !important\"><span style=\"color:#1d1c1d\">Deep expertise in Python, advanced SQL, dbt, Airflow, Spark and Snowflake (including performance tuning and cost management), plus distributed systems, data modeling and Data Mesh concepts</span></li><li style=\"color:#1d1c1d !important\"><span style=\"color:#1d1c1d\">Practical experience with Node.js, TypeScript/JavaScript, REST APIs, GraphQL, webhooks and event queues (Kafka, AWS SQS/SNS), including OAuth2 and SSO</span></li><li style=\"color:#1d1c1d !important\"><span style=\"color:#1d1c1d\">Ability to bridge data platform and web application teams, and to translate technical choices into business outcomes with product managers and engineers</span></li></ul><p><span style=\"color:#1d1c1d\"><br /><br /><b>Even Better If...</b><br /></span></p><ul><li style=\"color:#1d1c1d !important\"><span style=\"color:#1d1c1d\">Hands-on experience with AI and agentic tools such as LangGraph, LangChain, MCP servers, vector stores, and AI developer tools (Cursor, Codex, Claude Code)</span></li><li style=\"color:#1d1c1d !important\"><span style=\"color:#1d1c1d\">Experience operating on AWS, with Docker, Kubernetes/ECS, Lambda, CI/CD and Terraform</span></li><li style=\"color:#1d1c1d !important\"><span style=\"color:#1d1c1d\">Snowflake or AWS certifications</span></li><li style=\"color:#1d1c1d !important\"><span style=\"color:#1d1c1d\">Experience building data products that serve AI and agent-driven applications</span></li></ul><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><p style=\"text-align:left\"><span class=\"emphasis-3\">Unleash Your Potential</span></p><p style=\"text-align:left\"><span>When you join Salesforce, you’ll be limitless in all areas of your life. Our benefits and resources support you to find balance and<span> </span></span><i>be your best</i><span>, and our AI agents accelerate your impact so you can<span> </span></span><i>do your best</i><span>. Together, we’ll bring the power of Agentforce to organizations of all sizes and deliver amazing experiences that customers love. Apply today to not only shape the future — but to redefine what’s possible — for yourself, for AI, and the world.</span></p><p style=\"text-align:inherit\"></p><p style=\"text-align:left\"><span class=\"emphasis-3\">Accommodations</span></p><p><span style=\"font-size:inherit\">If you need a reasonable accommodation during the application or the recruiting process, please submit a request via this </span><a target=\"_blank\" href=\"https://careers.mail.salesforce.com/accommodations-request-form?_ga&#61;2.139086459.912759425.1690463420-976932181.1684251251\"><span style=\"color:#0000ff\"><u><span style=\"font-size:inherit\">Accommodations Request Form</span></u></span></a><span style=\"font-size:inherit\">.</span></p><p></p><p><span style=\"font-size:inherit\">Please note that Salesforce uses artificial intelligence (AI) tools to help our recruiters assess and evaluate candidates’ resumes and qualifications throughout the recruiting process. Humans will always make any candidate selection and hiring decisions. Please see our </span><a target=\"_blank\" href=\"https://www.salesforce.com/en-us/wp-content/uploads/sites/4/documents/legal/Privacy/salesforce-candidate-privacy-statement-december-2024.pdf\"><span style=\"color:#0000ff\"><u><span style=\"font-size:inherit\">Candidate Privacy Statement</span></u></span></a><span style=\"font-size:inherit\"> for more information about how we use your personal data and your rights, including with regard to use of AI tools and opt out options.</span></p><p></p><p style=\"text-align:inherit\"></p><p style=\"text-align:left\"><span class=\"emphasis-3\">Posting Statement</span></p><p style=\"text-align:left\"><span><span>Salesforce is an equal opportunity employer and maintains a policy of non-discrimination with all employees and applicants for employment. What does that mean exactly? It means that at Salesforce, we believe in equality for all. And we believe we can lead the path to equality in part by creating a workplace that’s inclusive, and free from discrimination. </span></span><a target=\"_blank\" href=\"https://www.eeoc.gov/know-your-rights-workplace-discrimination-illegal\">Know your rights: workplace discrimination is illegal.</a><span><span> Any employee or potential employee will be assessed on the basis of merit, competence and qualifications – without regard to race, religion, color, national origin, sex, sexual orientation, gender expression or identity, transgender status, age, disability, veteran or marital status, political viewpoint, or other classifications protected by law. This policy applies to current and prospective employees, no matter where they are in their Salesforce employment journey. It also applies to recruiting, hiring, job assignment, compensation, promotion, benefits, training, assessment of job performance, discipline, termination, and everything in between. Recruiting, hiring, and promotion decisions at Salesforce are fair and based on merit. The same goes for compensation, benefits, promotions, transfers, reduction in workforce, recall, training, and education.</span></span></p><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><h3></h3><h3></h3><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><h3></h3><h3></h3><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><h3></h3><h3></h3><h3></h3><h3></h3><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p><p style=\"text-align:inherit\"></p>",
+        "location": "India - Hyderabad",
+        "postedOn": "Posted Today",
+        "startDate": "2026-11-18",
+        "timeType": "Full time",
+        "jobReqId": "JR364686",
+        "jobPostingId": "Data-Engineering-SMTS-LMTS--Revenue-Analytics_JR364686",
+        "jobPostingSiteId": "External_Career_Site",
+        "country": {
+            "descriptor": "India",
+            "id": "c4f78be1a8f14da0ab49ce1162348a5e"
+        },
+        "canApply": true,
+        "posted": true,
+        "includeResumeParsing": true,
+        "jobRequisitionLocation": {
+            "descriptor": "India - Hyderabad",
+            "country": {
+                "descriptor": "India",
+                "id": "c4f78be1a8f14da0ab49ce1162348a5e",
+                "alpha2Code": "IN"
+            }
+        },
+        "remoteType": "Office - Flexible",
+        "externalUrl": "https://salesforce.wd12.myworkdayjobs.com/External_Career_Site/job/India---Hyderabad/Data-Engineering-SMTS-LMTS--Revenue-Analytics_JR364686",
+        "questionnaireId": "ef39582c47e61001a217bf87a7a20000",
+        "timeLeftToApply": "4 days left to apply",
+        "endDate": "2026-11-23",
+        "jobPostingEndDateAsText": "End Date: November 23, 2026"
+    },
+    "hiringOrganization": {
+        "name": "621 Salesforce.com India Private Limited Hyderabad Branch",
+        "url": ""
+    },
+    "similarJobs": [
+        {
+            "title": "LMTS Agentic AP/Invoicing",
+            "externalPath": "/job/India---Hyderabad/LMTS-Agentic-AP-Invoicing_JR366791",
+            "timeType": "Full time",
+            "locationsText": "India - Hyderabad",
+            "postedOn": "Posted Yesterday",
+            "startDate": "2026-11-17",
+            "remoteType": "Office - Flexible",
+            "timeLeftToApply": "1 day left to apply",
+            "jobPostingEndDateAsText": "End Date: November 20, 2026"
+        },
+        {
+            "title": "LMTS - Lead AI/ML Engineer (LLM Post-Training)",
+            "externalPath": "/job/India---Bangalore/LMTS---Lead-AI-ML-Engineer--LLM-Post-Training-_JR368314",
+            "timeType": "Full time",
+            "locationsText": "2 Locations",
+            "postedOn": "Posted 5 Days Ago",
+            "startDate": "2026-11-13",
+            "remoteType": "Office - Flexible",
+            "timeLeftToApply": "4 days left to apply",
+            "jobPostingEndDateAsText": "End Date: November 23, 2026"
+        },
+        {
+            "title": "Software Engineering LMTS - Backend Distributed Systems",
+            "externalPath": "/job/India---Bangalore/Software-Engineering-LMTS_JR338174",
+            "timeType": "Full time",
+            "locationsText": "2 Locations",
+            "postedOn": "Posted Today",
+            "startDate": "2026-11-18",
+            "remoteType": "Office - Flexible",
+            "timeLeftToApply": "8 hours left to apply",
+            "jobPostingEndDateAsText": "End Date: November 19, 2026"
+        }
+    ],
+    "userAuthenticated": false
+}
+

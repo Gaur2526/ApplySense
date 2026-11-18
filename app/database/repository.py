@@ -300,7 +300,7 @@ class JobRepository:
     def finish_run(self, run: Run, *, fetched: int, filtered: int, new: int, notified: int, errors: int,
                    permanently_failed: int = 0, expired: int = 0,
                    rate_limited_until: datetime | None = None,
-                   pending_details: int = 0) -> None:
+                   pending_details: int = 0, closed: int = 0) -> None:
         run.finished_at = utc_now()
         run.fetched = fetched
         run.filtered = filtered
@@ -311,6 +311,7 @@ class JobRepository:
         run.expired = expired
         run.rate_limited_until = rate_limited_until
         run.pending_details = pending_details
+        run.closed = closed
         self.session.commit()
 
     def unseen(self) -> list[Job]:

@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import CheckConstraint, JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, JSON, Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -45,6 +45,7 @@ class Job(Base):
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
     needs_rescore: Mapped[bool] = mapped_column(Boolean, default=False)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    apply_by: Mapped[date | None] = mapped_column(Date, nullable=True)
     age_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
     age_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -88,6 +89,7 @@ class Run(Base):
     tenant_key: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
     rate_limited_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     pending_details: Mapped[int] = mapped_column(Integer, default=0)
+    closed: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class EvaluatedJob(Base):

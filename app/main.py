@@ -255,8 +255,10 @@ async def _discover_workday(
                         "status": status,
                         "retry_after_seconds": config.scout.rate_limit_cooldown_seconds,
                         "pending_details": pending_details,
+                        "closed": getattr(scout, "closed_count", 0),
                     }
                     stats["pending_details"] = stats.get("pending_details", 0) + pending_details
+                    stats["closed"] = stats.get("closed", 0) + getattr(scout, "closed_count", 0)
 
                 remembered = [item for item in evaluations if item.reached_details or item.remember]
                 if baseline_mode and config.filters.baseline_include_recent:
@@ -412,7 +414,8 @@ def _log_source_summary(discovery_stats: dict) -> None:
         elif status == "failed":
             LOG.info("Source %s: failed; pending details=%d", source, pending)
         else:
-            LOG.info("Source %s: ok; pending details=%d", source, pending)
+            LOG.info("Source %s: ok; pending details=%d; closed=%d",
+                     source, pending, int(outcome.get("closed", 0)))
 
 
 def run(
@@ -503,6 +506,7 @@ def run(
                 "content_hash": stored.content_hash,
                 "experience_requirement": stored.experience_requirement,
                 "posted_at": stored.posted_at,
+                "apply_by": stored.apply_by,
                 "age_source": stored.age_source,
                 "age_days": stored.age_days,
                 "discovered_at": stored.discovered_at,
@@ -524,7 +528,8 @@ def run(
             LOG.info("Baseline stored %d new jobs; notifications skipped", inserted)
             repo.finish_run(run_record, fetched=discovery_stats.get("fetched", len(jobs)),
                             filtered=discovery_stats.get("filtered", len(jobs)), new=inserted,
-                            notified=0, errors=discovery_stats.get("errors", 0))
+                            notified=0, errors=discovery_stats.get("errors", 0),
+                            closed=discovery_stats.get("closed", 0))
             engine.dispose()
             return inserted
         notify_jobs = fresh if mode == "discovery" else [job for job in fresh if not job["uncertainty_reasons"]]
@@ -543,7 +548,8 @@ def run(
                 LOG.warning("Telegram is disabled in configuration; no notifications sent")
             repo.finish_run(run_record, fetched=discovery_stats.get("fetched", len(jobs)),
                             filtered=discovery_stats.get("filtered", len(jobs)), new=inserted,
-                            notified=0, errors=discovery_stats.get("errors", 0))
+                            notified=0, errors=discovery_stats.get("errors", 0),
+                            closed=discovery_stats.get("closed", 0))
             engine.dispose()
             return len(notify_jobs)
         config.require_telegram()
@@ -631,6 +637,6 @@ def run(
         repo.finish_run(run_record, fetched=discovery_stats.get("fetched", len(jobs)),
                         filtered=discovery_stats.get("filtered", len(jobs)), new=inserted,
                         notified=sent, errors=errors, permanently_failed=permanently_failed,
-                        expired=expired_count)
+                        expired=expired_count, closed=discovery_stats.get("closed", 0))
     engine.dispose()
     return sent

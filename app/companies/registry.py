@@ -16,6 +16,7 @@ class WorkdayTenantConfig(BaseModel):
     host: str
     tenant: str
     site: str
+    country_facet_key: str = "locationCountry"
     country_facet_id: str
     assume_country: str | None = None
     search_texts: list[str] = Field(default_factory=lambda: ["software engineer"], min_length=1)
@@ -26,7 +27,7 @@ class WorkdayTenantConfig(BaseModel):
     reevaluate_after_days: int = Field(default=14, ge=1, le=365)
     excluded_title_levels: list[str] = Field(default_factory=lambda: ["IV", "V", "VI", "4", "5", "6"])
 
-    @field_validator("host", "tenant", "site", "country_facet_id")
+    @field_validator("host", "tenant", "site", "country_facet_key", "country_facet_id")
     @classmethod
     def non_blank(cls, value: str) -> str:
         if not value.strip():

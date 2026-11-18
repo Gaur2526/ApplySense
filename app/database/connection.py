@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from app.database.models import Base, DatabaseMeta
 
 # Increment this whenever an ORM model or its persisted schema changes.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCHEMA_VERSION_ERROR = (
     "applysense.db was created by an older version. Delete it (rm applysense.db) "
     "and run again. No migration is provided."

@@ -100,7 +100,11 @@ async def check_workday_tenant(tenant_key: str, config, *, details: bool = False
             if item is None:
                 raise ValueError("First Workday list record is malformed")
             payload = await scout.fetch_details(entry.workday, item)
-            detail_job = normalize_workday_job(item, payload, entry.workday)
+            detail_job = normalize_workday_job(
+                item, payload, entry.workday,
+                required_experience_headings=config.filters.experience_requirement_headings,
+                preferred_experience_headings=config.filters.experience_preferred_headings,
+            )
         return entry, total, postings, detail_job
     finally:
         await scout.close()

@@ -192,7 +192,7 @@ def test_to_orm_dict_contains_only_existing_orm_fields():
     assert set(values) == {
         "source", "source_id", "company", "title", "location", "employment_type",
         "description", "canonical_url", "content_hash", "experience_requirement",
-        "posted_at", "age_source", "age_days", "discovered_at", "uncertainty_reasons",
+        "posted_at", "apply_by", "age_source", "age_days", "discovered_at", "uncertainty_reasons",
     }
 
 
