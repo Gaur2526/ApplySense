@@ -1188,7 +1188,7 @@ def test_html_block_page_is_reported_as_invalid_json():
 def test_retries_429_and_honors_retry_after(monkeypatch):
     attempts = []
     waits = []
-    async def fake_wait(attempt, response=None):
+    async def fake_wait(attempt, response=None, **_kwargs):
         waits.append((attempt, response.headers.get("Retry-After") if response else None))
     monkeypatch.setattr(workday, "_wait_before_retry", fake_wait)
     def handler(request):
@@ -1210,7 +1210,7 @@ def test_retries_429_and_honors_retry_after(monkeypatch):
 def test_network_timeout_reuses_existing_retry_backoff(monkeypatch):
     attempts = []
     waits = []
-    async def fake_wait(attempt, response=None):
+    async def fake_wait(attempt, response=None, **_kwargs):
         waits.append((attempt, response))
     monkeypatch.setattr(workday, "_wait_before_retry", fake_wait)
     def handler(request):

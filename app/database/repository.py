@@ -119,6 +119,22 @@ class JobRepository:
             .limit(1)
         )
 
+    def last_tenant_rate_limited_until(self, source: str, tenant_key: str) -> datetime | None:
+        return self.session.scalar(
+            select(Run.rate_limited_until)
+            .where(Run.source == source, Run.tenant_key == tenant_key)
+            .order_by(Run.finished_at.desc())
+            .limit(1)
+        )
+
+    def last_tenant_pending_details(self, source: str, tenant_key: str) -> int:
+        return int(self.session.scalar(
+            select(Run.pending_details)
+            .where(Run.source == source, Run.tenant_key == tenant_key)
+            .order_by(Run.finished_at.desc())
+            .limit(1)
+        ) or 0)
+
     def notification_statuses(self, job_ids: Iterable[int], *, chunk_size: int = 400) -> dict[int, Notification]:
         found: dict[int, Notification] = {}
         ordered = list(set(job_ids))
@@ -282,7 +298,9 @@ class JobRepository:
         return run
 
     def finish_run(self, run: Run, *, fetched: int, filtered: int, new: int, notified: int, errors: int,
-                   permanently_failed: int = 0, expired: int = 0) -> None:
+                   permanently_failed: int = 0, expired: int = 0,
+                   rate_limited_until: datetime | None = None,
+                   pending_details: int = 0) -> None:
         run.finished_at = utc_now()
         run.fetched = fetched
         run.filtered = filtered
@@ -291,6 +309,8 @@ class JobRepository:
         run.errors = errors
         run.permanently_failed = permanently_failed
         run.expired = expired
+        run.rate_limited_until = rate_limited_until
+        run.pending_details = pending_details
         self.session.commit()
 
     def unseen(self) -> list[Job]:

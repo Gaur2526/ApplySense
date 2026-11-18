@@ -301,7 +301,7 @@ def test_429_respects_retry_after(monkeypatch):
     assert delays == [3.0]
 
 
-def test_5xx_retries_with_exponential_jitter(monkeypatch):
+def test_5xx_retries_with_configured_jittered_backoff(monkeypatch):
     calls, ceilings, delays = 0, [], []
 
     def fake_uniform(low, high):
@@ -323,8 +323,8 @@ def test_5xx_retries_with_exponential_jitter(monkeypatch):
 
     assert len(run_fetch(handler, retries=2)) == 1
     assert calls == 3
-    assert ceilings == [0.5, 1.0]
-    assert delays == [0.25, 0.5]
+    assert ceilings == [1.2, 1.2]
+    assert delays == [3.0, 9.0]
 
 
 @pytest.mark.parametrize("error", [httpx.ConnectError, httpx.ReadTimeout])

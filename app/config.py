@@ -18,6 +18,17 @@ class ScoutConfig(StrictModel):
     request_timeout_seconds: float = Field(default=15, gt=0, le=120)
     retries: int = Field(default=3, ge=0, le=10)
     concurrency: int = Field(default=4, ge=1, le=20)
+    request_interval_seconds: float = Field(default=2.5, ge=0, le=120)
+    retry_backoff_seconds: list[float] = Field(default_factory=lambda: [5.0, 15.0, 45.0], min_length=1)
+    retry_backoff_cap_seconds: float = Field(default=120, gt=0, le=600)
+    rate_limit_cooldown_seconds: int = Field(default=7200, ge=0, le=604800)
+
+    @field_validator("retry_backoff_seconds")
+    @classmethod
+    def backoff_values_must_be_positive(cls, value: list[float]) -> list[float]:
+        if any(delay <= 0 for delay in value):
+            raise ValueError("retry_backoff_seconds values must be positive")
+        return value
 
 
 class FilterConfig(StrictModel):

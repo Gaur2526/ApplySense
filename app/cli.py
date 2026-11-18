@@ -57,6 +57,8 @@ async def check_greenhouse_company(identifier: str, config) -> tuple[bool, list[
         timeout=config.scout.request_timeout_seconds,
         retries=config.scout.retries,
         concurrency=config.scout.concurrency,
+        retry_backoff_seconds=config.scout.retry_backoff_seconds,
+        retry_backoff_cap_seconds=config.scout.retry_backoff_cap_seconds,
     )
     try:
         return True, await scout.fetch_jobs(identifier)
@@ -86,7 +88,9 @@ async def check_workday_tenant(tenant_key: str, config, *, details: bool = False
     scout = WorkdayScout(
         timeout=config.scout.request_timeout_seconds,
         retries=config.scout.retries,
-        request_interval_seconds=1.0,
+        request_interval_seconds=config.scout.request_interval_seconds,
+        retry_backoff_seconds=config.scout.retry_backoff_seconds,
+        retry_backoff_cap_seconds=config.scout.retry_backoff_cap_seconds,
     )
     try:
         total, postings = await scout.fetch_first_page(entry.workday)

@@ -23,12 +23,17 @@ from app.filters.decision import FilterStatus
 from app.filters.age_filter import age_days_at
 from app.filters.evaluation import evaluate_filter_decisions
 from app.filters.experience_filter import parse_experience_requirement
-from app.scouts.greenhouse import RETRYABLE_STATUS_CODES, _wait_before_retry
+from app.scouts.greenhouse import RETRYABLE_STATUS_CODES
+from app.scouts.retry import (
+    DEFAULT_BACKOFF_CAP_SECONDS, DEFAULT_BACKOFF_SECONDS,
+    retry_after_header, retry_after_seconds, wait_before_retry,
+)
 from app.schemas.job import Job as JobSchema
 from app.utils.hashing import content_hash
 from app.utils.urls import normalize_url
 
 LOG = logging.getLogger(__name__)
+_wait_before_retry = wait_before_retry
 HEADERS = {
     "Accept": "application/json",
     "User-Agent": "ApplySense/0.1 (personal job search)",
@@ -88,6 +93,16 @@ class WorkdayResponseError(RuntimeError):
 
 class WorkdayRobotsBlockedError(RuntimeError):
     """A request targets a path disallowed by the tenant robots policy."""
+
+
+class WorkdayRateLimitedError(RuntimeError):
+    def __init__(self, host: str, retry_after: str | None, retry_after_seconds_value: float | None,
+                 *, circuit_open: bool = False):
+        self.host = host
+        self.retry_after = retry_after
+        self.retry_after_seconds = retry_after_seconds_value
+        self.circuit_open = circuit_open
+        super().__init__(f"Workday host {host} was rate limited")
 
 
 @dataclass(frozen=True)
@@ -295,16 +310,27 @@ class WorkdayScout:
         *,
         timeout: float = 15,
         retries: int = 3,
-        request_interval_seconds: float = 1.0,
+        request_interval_seconds: float = 2.5,
+        retry_backoff_seconds: tuple[float, ...] | list[float] = DEFAULT_BACKOFF_SECONDS,
+        retry_backoff_cap_seconds: float = DEFAULT_BACKOFF_CAP_SECONDS,
         client: httpx.AsyncClient | None = None,
     ):
         self.timeout = timeout
         self.retries = retries
         self.request_interval_seconds = request_interval_seconds
+        self.retry_backoff_seconds = tuple(retry_backoff_seconds)
+        self.retry_backoff_cap_seconds = retry_backoff_cap_seconds
         self.client = client or httpx.AsyncClient(timeout=timeout, follow_redirects=True)
         self._owns_client = client is None
         self._host_semaphores: dict[str, asyncio.Semaphore] = {}
         self._last_request_by_host: dict[str, float] = {}
+        self._consecutive_rate_limited_requests: dict[str, int] = {}
+        self._open_circuits: set[str] = set()
+        self.rate_limited = False
+        self.rate_limit_host: str | None = None
+        self.rate_limit_retry_after: str | None = None
+        self.rate_limit_retry_after_seconds: float | None = None
+        self.pending_details_count = 0
         self._unknown_age_labels_logged: set[str] = set()
 
     async def close(self) -> None:
@@ -331,6 +357,11 @@ class WorkdayScout:
         # Keep this request-level guard even if another caller supplies a URL.
         self._guard_url(url)
         host = urlsplit(url).netloc
+        if host in self._open_circuits:
+            raise WorkdayRateLimitedError(
+                host, self.rate_limit_retry_after, self.rate_limit_retry_after_seconds,
+                circuit_open=True,
+            )
         semaphore = self._host_semaphores.setdefault(host, asyncio.Semaphore(1))
         headers = dict(HEADERS)
         if method == "POST":
@@ -353,14 +384,42 @@ class WorkdayScout:
                 except (httpx.TransportError, OSError):
                     if attempt >= self.retries:
                         raise
-                    await _wait_before_retry(attempt)
+                    await _wait_before_retry(
+                        attempt, backoff_seconds=self.retry_backoff_seconds,
+                        cap_seconds=self.retry_backoff_cap_seconds,
+                    )
                     continue
                 if response.status_code in RETRYABLE_STATUS_CODES:
                     if attempt >= self.retries:
+                        if response.status_code == 429:
+                            retry_value = retry_after_header(response)
+                            self.rate_limited = True
+                            self.rate_limit_host = host
+                            self.rate_limit_retry_after = retry_value
+                            self.rate_limit_retry_after_seconds = retry_after_seconds(response)
+                            failures = self._consecutive_rate_limited_requests.get(host, 0) + 1
+                            self._consecutive_rate_limited_requests[host] = failures
+                            circuit_open = failures >= 2
+                            if circuit_open:
+                                self._open_circuits.add(host)
+                            raise WorkdayRateLimitedError(
+                                host, retry_value, self.rate_limit_retry_after_seconds,
+                                circuit_open=circuit_open,
+                            )
                         response.raise_for_status()
-                    await _wait_before_retry(attempt, response)
+                    if response.status_code == 429:
+                        LOG.info(
+                            "Workday host %s returned HTTP 429; Retry-After=%s; retrying",
+                            host, retry_after_header(response) or "absent",
+                        )
+                    await _wait_before_retry(
+                        attempt, response,
+                        backoff_seconds=self.retry_backoff_seconds,
+                        cap_seconds=self.retry_backoff_cap_seconds,
+                    )
                     continue
                 response.raise_for_status()
+                self._consecutive_rate_limited_requests[host] = 0
                 try:
                     payload = response.json()
                 except ValueError as exc:
@@ -406,10 +465,15 @@ class WorkdayScout:
     async def list_jobs(self, company_name: str, tenant: WorkdayTenantConfig) -> list[dict[str, Any]]:
         deduplicated: dict[str, dict[str, Any]] = {}
         truncated_total: int | None = None
+        rate_limited = False
         for search_text in tenant.search_texts:
             offset = 0
             for page_index in range(tenant.max_pages):
-                total, records = await self.fetch_list_page(tenant, search_text, offset)
+                try:
+                    total, records = await self.fetch_list_page(tenant, search_text, offset)
+                except WorkdayRateLimitedError:
+                    rate_limited = True
+                    break
                 if not records:
                     break
                 for item in records:
@@ -423,6 +487,8 @@ class WorkdayScout:
                 if page_index == tenant.max_pages - 1:
                     truncated_total = max(truncated_total or 0, total)
                 offset += tenant.page_size
+            if rate_limited:
+                break
         if truncated_total is not None:
             LOG.warning(
                 "Workday tenant %s: max_pages reached, %d of total %d jobs seen; some jobs may be missing",
@@ -442,6 +508,11 @@ class WorkdayScout:
         run_time: datetime | None = None,
     ) -> list[WorkdayEvaluation]:
         run_time = run_time or datetime.now(timezone.utc)
+        self.rate_limited = False
+        self.rate_limit_host = None
+        self.rate_limit_retry_after = None
+        self.rate_limit_retry_after_seconds = None
+        self.pending_details_count = 0
         known = known_source_ids or set()
         recently_evaluated = recently_evaluated_source_ids or set()
         list_jobs = await self.list_jobs(company_name, tenant)
@@ -487,11 +558,26 @@ class WorkdayScout:
                 candidates.append(item)
         details_count = 0
         real_age_disagreements = 0
-        for item in candidates:
+        for candidate_index, item in enumerate(candidates):
             if details_count >= tenant.max_detail_requests_per_run:
+                self.pending_details_count += len(candidates) - candidate_index
                 break
             details_count += 1
-            detail_payload = await self.fetch_details(tenant, item)
+            try:
+                detail_payload = await self.fetch_details(tenant, item)
+            except WorkdayRateLimitedError as exc:
+                self.rate_limited = True
+                self.rate_limit_host = exc.host
+                self.rate_limit_retry_after = exc.retry_after
+                self.rate_limit_retry_after_seconds = exc.retry_after_seconds
+                self.pending_details_count += 1
+                if exc.circuit_open:
+                    self.pending_details_count += len(candidates) - candidate_index - 1
+                    break
+                # Keep trying in feed order. Successful details remain usable;
+                # this requisition is not returned or remembered and is retried
+                # from the list feed on the next run.
+                continue
             try:
                 job = normalize_workday_job(item, detail_payload, tenant, run_time=run_time)
             except (ValueError, ValidationError) as exc:

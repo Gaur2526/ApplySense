@@ -19,6 +19,10 @@ from app.filters.experience_filter import parse_experience_requirement
 from app.filters.age_filter import age_days_at
 from app.schemas.job import Job as JobSchema
 from app.scouts.base import Scout
+from app.scouts.retry import (
+    DEFAULT_BACKOFF_CAP_SECONDS, DEFAULT_BACKOFF_SECONDS,
+    retry_after_header, retry_after_seconds, wait_before_retry,
+)
 from app.utils.hashing import content_hash
 from app.utils.urls import normalize_url
 
@@ -30,6 +34,15 @@ RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 class GreenhouseResponseError(RuntimeError):
     """The API returned JSON that does not match the documented response shape."""
+
+
+class GreenhouseRateLimitedError(RuntimeError):
+    def __init__(self, board: str, retry_after: str | None, retry_after_seconds_value: float | None):
+        self.board = board
+        self.host = "boards-api.greenhouse.io"
+        self.retry_after = retry_after
+        self.retry_after_seconds = retry_after_seconds_value
+        super().__init__(f"Greenhouse board {board} was rate limited")
 
 
 class _PlainTextParser(HTMLParser):
@@ -181,35 +194,18 @@ def normalize_greenhouse_job(
     return JobSchema.model_validate(normalized).to_orm_dict()
 
 
-def _retry_after_seconds(response: httpx.Response | None) -> float | None:
-    if response is None:
-        return None
-    value = response.headers.get("Retry-After")
-    if not value:
-        return None
-    try:
-        return max(0.0, float(value))
-    except ValueError:
-        try:
-            retry_at = parsedate_to_datetime(value)
-            if retry_at.tzinfo is None:
-                retry_at = retry_at.replace(tzinfo=timezone.utc)
-            return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
-        except (TypeError, ValueError, OverflowError):
-            return None
-
-
-async def _wait_before_retry(attempt: int, response: httpx.Response | None = None) -> None:
-    delay = _retry_after_seconds(response)
-    if delay is None:
-        ceiling = min(0.5 * (2 ** attempt), 8.0)
-        delay = random.uniform(0.0, ceiling)
-    await asyncio.sleep(delay)
+_retry_after_seconds = retry_after_seconds
+_wait_before_retry = wait_before_retry
 
 
 class GreenhouseScout(Scout):
-    def __init__(self, *, timeout: float = 15, retries: int = 3, concurrency: int = 4, client: httpx.AsyncClient | None = None):
+    def __init__(self, *, timeout: float = 15, retries: int = 3, concurrency: int = 4,
+                 retry_backoff_seconds=DEFAULT_BACKOFF_SECONDS,
+                 retry_backoff_cap_seconds: float = DEFAULT_BACKOFF_CAP_SECONDS,
+                 client: httpx.AsyncClient | None = None):
         self.timeout, self.retries = timeout, retries
+        self.retry_backoff_seconds = tuple(retry_backoff_seconds)
+        self.retry_backoff_cap_seconds = retry_backoff_cap_seconds
         self._semaphore = asyncio.Semaphore(concurrency)
         self.client = client or httpx.AsyncClient(timeout=timeout, follow_redirects=True)
         self._owns_client = client is None
@@ -234,15 +230,38 @@ class GreenhouseScout(Scout):
                         LOG.error("Greenhouse request failed for board %s after %s attempts: %s", board, attempt + 1, exc)
                         raise
                     LOG.warning("Greenhouse network request failed for %s; retrying", board)
-                    await _wait_before_retry(attempt)
+                    await _wait_before_retry(
+                        attempt,
+                        backoff_seconds=self.retry_backoff_seconds,
+                        cap_seconds=self.retry_backoff_cap_seconds,
+                    )
                     continue
 
                 transient_status = response.status_code in RETRYABLE_STATUS_CODES
                 if transient_status:
                     if attempt >= self.retries:
+                        if response.status_code == 429:
+                            retry_value = retry_after_header(response)
+                            LOG.warning(
+                                "Greenhouse host boards-api.greenhouse.io rate limited board %s; Retry-After=%s",
+                                board, retry_value or "absent",
+                            )
+                            raise GreenhouseRateLimitedError(
+                                board, retry_value, retry_after_seconds(response)
+                            )
                         response.raise_for_status()
-                    LOG.warning("Greenhouse returned HTTP %s for %s; retrying", response.status_code, board)
-                    await _wait_before_retry(attempt, response)
+                    if response.status_code == 429:
+                        LOG.info(
+                            "Greenhouse host boards-api.greenhouse.io returned HTTP 429 for board %s; Retry-After=%s",
+                            board, retry_after_header(response) or "absent",
+                        )
+                    else:
+                        LOG.warning("Greenhouse returned HTTP %s for board %s; retrying", response.status_code, board)
+                    await _wait_before_retry(
+                        attempt, response,
+                        backoff_seconds=self.retry_backoff_seconds,
+                        cap_seconds=self.retry_backoff_cap_seconds,
+                    )
                     continue
 
                 # All permanent 4xx responses, including 400/401/403/404, fail

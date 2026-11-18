@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from math import ceil
 from pathlib import Path
 
 from app.config import AppConfig
@@ -22,7 +23,7 @@ from app.filters.settings import effective_filter_settings_hash
 from app.filters.location_filter import matches_location, preferred_city_rank
 from app.diagnostics import format_filter_diagnostics
 from app.notifications.telegram import send_jobs, send_summary
-from app.scouts.greenhouse import GreenhouseScout
+from app.scouts.greenhouse import GreenhouseRateLimitedError, GreenhouseScout
 from app.scouts.workday import WorkdayScout
 from app.utils.logger import configure_logging
 
@@ -137,7 +138,9 @@ async def _discover_workday(
     scout = WorkdayScout(
         timeout=config.scout.request_timeout_seconds,
         retries=config.scout.retries,
-        request_interval_seconds=1.0,
+        request_interval_seconds=config.scout.request_interval_seconds,
+        retry_backoff_seconds=config.scout.retry_backoff_seconds,
+        retry_backoff_cap_seconds=config.scout.retry_backoff_cap_seconds,
     )
     jobs: list[dict] = []
     try:
@@ -152,11 +155,39 @@ async def _discover_workday(
             repo = JobRepository(context) if context is not None else None
             try:
                 if repo is not None:
+                    cooldown_until = repo.last_tenant_rate_limited_until("workday", tenant.tenant)
+                    if cooldown_until is not None:
+                        if cooldown_until.tzinfo is None:
+                            cooldown_until = cooldown_until.replace(tzinfo=timezone.utc)
+                        remaining = (cooldown_until - utc_now()).total_seconds()
+                        if remaining > 0 and not force:
+                            pending = repo.last_tenant_pending_details("workday", tenant.tenant)
+                            LOG.info(
+                                "Skipping Workday tenant %s during rate-limit cooldown (%d seconds remain)",
+                                tenant.tenant, int(remaining),
+                            )
+                            if stats is not None:
+                                stats.setdefault("sources", {})[f"workday/{tenant.tenant}"] = {
+                                    "status": "rate_limited",
+                                    "retry_after_seconds": remaining,
+                                    "pending_details": pending,
+                                }
+                                stats["pending_details"] = stats.get("pending_details", 0) + pending
+                            continue
+                        if remaining > 0 and force:
+                            LOG.warning(
+                                "--force overriding Workday rate-limit cooldown for tenant %s; further requests risk additional rate limiting",
+                                tenant.tenant,
+                            )
                     if not force and _tenant_run_is_recent(
                         repo.last_tenant_run("workday", tenant.tenant),
                         tenant.min_interval_seconds,
                     ):
                         LOG.info("Skipping Workday tenant %s because its minimum interval has not elapsed", tenant.tenant)
+                        if stats is not None:
+                            stats.setdefault("sources", {})[f"workday/{tenant.tenant}"] = {
+                                "status": "ok", "pending_details": 0,
+                            }
                         continue
                     known_ids = repo.job_source_ids_for_source("workday")
                     evaluated_ids = repo.evaluated_source_ids_for_source("workday")
@@ -196,11 +227,36 @@ async def _discover_workday(
                     )
                     if stats is not None:
                         stats["errors"] = stats.get("errors", 0) + 1
+                        stats.setdefault("sources", {})[f"workday/{tenant.tenant}"] = {
+                            "status": "failed", "pending_details": 0,
+                        }
                     if repo is not None and source_run is not None:
                         repo.finish_run(
                             source_run, fetched=0, filtered=0, new=0, notified=0, errors=1
                         )
                     continue
+
+                rate_limited_until = None
+                pending_details = getattr(scout, "pending_details_count", 0)
+                if getattr(scout, "rate_limited", False):
+                    retry_header = getattr(scout, "rate_limit_retry_after", None) or "absent"
+                    LOG.warning(
+                        "Workday host %s rate limited tenant %s; Retry-After=%s",
+                        getattr(scout, "rate_limit_host", None) or tenant.host, tenant.tenant, retry_header,
+                    )
+                    rate_limited_until = utc_now() + timedelta(
+                        seconds=config.scout.rate_limit_cooldown_seconds
+                    )
+                    status = "rate_limited"
+                else:
+                    status = "ok"
+                if stats is not None:
+                    stats.setdefault("sources", {})[f"workday/{tenant.tenant}"] = {
+                        "status": status,
+                        "retry_after_seconds": config.scout.rate_limit_cooldown_seconds,
+                        "pending_details": pending_details,
+                    }
+                    stats["pending_details"] = stats.get("pending_details", 0) + pending_details
 
                 remembered = [item for item in evaluations if item.reached_details or item.remember]
                 if baseline_mode and config.filters.baseline_include_recent:
@@ -232,6 +288,8 @@ async def _discover_workday(
                             new=sum(item.decision != FilterStatus.REJECT.value for item in remembered),
                             notified=0,
                             errors=0,
+                            rate_limited_until=rate_limited_until,
+                            pending_details=pending_details,
                         )
                 if stats is not None:
                     stats["fetched"] = stats.get("fetched", 0) + len(evaluations)
@@ -266,7 +324,13 @@ async def discover(
     companies = verified_greenhouse_entries(load_registry(config.company_registry_path))
     if not companies:
         LOG.info("No verified Greenhouse companies with board identifiers are configured")
-    scout = GreenhouseScout(timeout=config.scout.request_timeout_seconds, retries=config.scout.retries, concurrency=config.scout.concurrency)
+    scout = GreenhouseScout(
+        timeout=config.scout.request_timeout_seconds,
+        retries=config.scout.retries,
+        concurrency=config.scout.concurrency,
+        retry_backoff_seconds=config.scout.retry_backoff_seconds,
+        retry_backoff_cap_seconds=config.scout.retry_backoff_cap_seconds,
+    )
     try:
         results = await asyncio.gather(
             *(scout.fetch_jobs(company.board_identifier, run_time=run_time) for company in companies),
@@ -275,10 +339,27 @@ async def discover(
         jobs: list[dict] = []
         for company, result in zip(companies, results):
             if isinstance(result, Exception):
-                LOG.error("Failed to fetch %s Greenhouse board %s: %s", company.company_name, company.board_identifier, result)
-                if stats is not None:
-                    stats["errors"] = stats.get("errors", 0) + 1
+                if isinstance(result, GreenhouseRateLimitedError):
+                    if stats is not None:
+                        stats.setdefault("sources", {})[f"greenhouse/{company.company_name}"] = {
+                            "status": "rate_limited",
+                            "retry_after_seconds": result.retry_after_seconds
+                                if result.retry_after_seconds is not None
+                                else config.scout.rate_limit_cooldown_seconds,
+                            "pending_details": 0,
+                        }
+                else:
+                    LOG.error("Failed to fetch %s Greenhouse board %s: %s", company.company_name, company.board_identifier, result)
+                    if stats is not None:
+                        stats["errors"] = stats.get("errors", 0) + 1
+                        stats.setdefault("sources", {})[f"greenhouse/{company.company_name}"] = {
+                            "status": "failed", "pending_details": 0,
+                        }
             else:
+                if stats is not None:
+                    stats.setdefault("sources", {})[f"greenhouse/{company.company_name}"] = {
+                        "status": "ok", "pending_details": 0,
+                    }
                 for job in result:
                     job["company"] = company.company_name
                 jobs.extend(result)
@@ -317,6 +398,23 @@ def baseline(config: AppConfig, *, dry_run: bool = False, limit: int | None = No
     return run(config, dry_run=dry_run, baseline_mode=True, limit=limit)
 
 
+def _log_source_summary(discovery_stats: dict) -> None:
+    for source, outcome in sorted(discovery_stats.get("sources", {}).items()):
+        status = outcome.get("status", "failed")
+        pending = int(outcome.get("pending_details", 0))
+        if status == "rate_limited":
+            seconds = max(0.0, float(outcome.get("retry_after_seconds", 0)))
+            retry_minutes = max(1, ceil(seconds / 60))
+            LOG.info(
+                "Source %s: rate limited, retry after about %d min; pending details=%d",
+                source, retry_minutes, pending,
+            )
+        elif status == "failed":
+            LOG.info("Source %s: failed; pending details=%d", source, pending)
+        else:
+            LOG.info("Source %s: ok; pending details=%d", source, pending)
+
+
 def run(
     config: AppConfig,
     *,
@@ -346,7 +444,7 @@ def run(
                 initialize_database(startup_engine)
         finally:
             startup_engine.dispose()
-    discovery_stats: dict[str, int] = {"errors": 0}
+    discovery_stats: dict = {"errors": 0, "sources": {}, "pending_details": 0}
     if workday_entries:
         discover_kwargs = {
             "stats": discovery_stats,
@@ -364,6 +462,7 @@ def run(
         ))
     else:
         jobs = asyncio.run(discover(config, stats=discovery_stats, run_time=run_time))
+    _log_source_summary(discovery_stats)
     if limit is not None:
         jobs = jobs[:limit]
     if dry_run:

@@ -6,6 +6,10 @@ scout:
   request_timeout_seconds: 15
   retries: 3
   concurrency: 4
+  request_interval_seconds: 2.5
+  retry_backoff_seconds: [5, 15, 45]
+  retry_backoff_cap_seconds: 120
+  rate_limit_cooldown_seconds: 7200
 
 filters:
   keywords:

@@ -86,6 +86,8 @@ class Run(Base):
     expired: Mapped[int] = mapped_column(Integer, default=0)
     source: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
     tenant_key: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    rate_limited_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pending_details: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class EvaluatedJob(Base):
