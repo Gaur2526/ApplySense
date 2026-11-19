@@ -34,7 +34,7 @@ def registry_tenants():
 def test_registry_adds_salesforce_without_changing_tenant_request_settings():
     entries = load_registry("data/company_registry.json")
     salesforce = next(entry for entry in entries if entry.company_name == "Salesforce")
-    assert salesforce.status == "pending_verification"
+    assert salesforce.status == "verified"
     assert salesforce.ats_provider == "workday"
     assert salesforce.workday.model_dump() == {
         "host": "salesforce.wd12.myworkdayjobs.com",
@@ -74,6 +74,60 @@ def test_workday_request_body_uses_each_tenants_facet_key(tenant_index):
     assert json.loads(captured[0].content)["appliedFacets"] == {
         tenant.country_facet_key: [tenant.country_facet_id]
     }
+
+
+@pytest.mark.parametrize("tenant_index", [0, 1], ids=["walmart", "salesforce"])
+def test_workday_headers_are_tenant_derived_for_list_and_details(tenant_index, caplog):
+    import asyncio
+    import logging
+
+    tenants = registry_tenants()
+    tenant = tenants[tenant_index]
+    captured = []
+
+    def handler(request):
+        captured.append(request)
+        if request.method == "POST":
+            return httpx.Response(200, json={"total": 0, "jobPostings": []})
+        return httpx.Response(200, json={"jobPostingInfo": {}})
+
+    async def scenario():
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        scout = WorkdayScout(client=client, retries=0, request_interval_seconds=0)
+        try:
+            await scout.fetch_first_page(tenant)
+            await scout.fetch_details(tenant, {"external_path": "/job/test"})
+        finally:
+            await scout.close()
+
+    with caplog.at_level(logging.DEBUG, logger="app.scouts.workday"):
+        asyncio.run(scenario())
+    assert [request.method for request in captured] == ["POST", "GET"]
+    expected_headers = {
+        "origin": f"https://{tenant.host}",
+        "referer": f"https://{tenant.host}/{tenant.site}",
+        "accept-language": "en-US",
+        "user-agent": "ApplySense/0.1 (personal job search)",
+    }
+    forbidden = {"cookie", "authorization", "sec-ch-ua", "sec-fetch-site", "sec-fetch-mode",
+                 "sec-fetch-dest", "sec-fetch-user"}
+    for request in captured:
+        for name, value in expected_headers.items():
+            assert request.headers[name] == value
+        assert forbidden.isdisjoint({name.lower() for name in request.headers})
+    assert caplog.text.count(f"Workday tenant {tenant.tenant} request header names=") == 1
+    assert "negotiated HTTP version=HTTP/1.1" in caplog.text
+    assert "en-US" not in caplog.text
+    assert tenant.host not in caplog.text
+
+
+def test_workday_http2_is_disabled_by_default():
+    config = AppConfig()
+    assert config.workday.http2 is False
+    scout = WorkdayScout(http2=config.workday.http2)
+    assert scout.http2 is False
+    import asyncio
+    asyncio.run(scout.close())
 
 
 def test_salesforce_fixture_normalizes_real_shape_and_registry_company_name():

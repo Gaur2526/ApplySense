@@ -141,6 +141,7 @@ async def _discover_workday(
         request_interval_seconds=config.scout.request_interval_seconds,
         retry_backoff_seconds=config.scout.retry_backoff_seconds,
         retry_backoff_cap_seconds=config.scout.retry_backoff_cap_seconds,
+        http2=config.workday.http2,
     )
     jobs: list[dict] = []
     try:

@@ -77,11 +77,16 @@ class NotificationConfig(StrictModel):
     per_run_cap: int = Field(default=20, ge=1, le=500)
 
 
+class WorkdayConfig(StrictModel):
+    http2: bool = False
+
+
 class AppConfig(StrictModel):
     database_url: str = "sqlite:///./applysense.db"
     company_registry_path: str = "data/company_registry.json"
     log_level: str = "INFO"
     scout: ScoutConfig = Field(default_factory=ScoutConfig)
+    workday: WorkdayConfig = Field(default_factory=WorkdayConfig)
     filters: FilterConfig = Field(default_factory=FilterConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     notifications: NotificationConfig = Field(default_factory=NotificationConfig)
@@ -119,6 +124,7 @@ def load_config(path: str | Path = "config/config.yaml", *, env_file: str | Path
                 raise ValueError("Configuration YAML root must be a mapping")
             raw = loaded
     raw.setdefault("scout", {})
+    raw.setdefault("workday", {})
     raw.setdefault("filters", {})
     raw.setdefault("telegram", {})
     raw.setdefault("notifications", {})

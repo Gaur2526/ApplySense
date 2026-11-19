@@ -44,6 +44,8 @@ Greenhouse discovery reads only registry companies whose ATS is `greenhouse`, wh
 
 SQLite defaults to `./applysense.db`. Set `DATABASE_URL` to use another SQLAlchemy-supported database URL. The company registry path defaults to `data/company_registry.json` and can be changed with `company_registry_path` in `config/config.yaml`.
 
+Workday uses HTTP/1.1 by default. The optional `workday.http2` setting is disabled by default; enabling it requires installing HTTPX's HTTP/2 extra with `python -m pip install 'httpx[http2]'` (which installs the `h2` dependency).
+
 ## First live run
 
 Run these commands in order from the repository root. Before the last command, edit `.env` with the Telegram credentials and set `telegram.enabled: true` in `config/config.yaml` if you want live notifications.

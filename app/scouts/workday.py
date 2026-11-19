@@ -39,6 +39,7 @@ LOG = logging.getLogger(__name__)
 _wait_before_retry = wait_before_retry
 HEADERS = {
     "Accept": "application/json",
+    "Accept-Language": "en-US",
     "User-Agent": "ApplySense/0.1 (personal job search)",
 }
 TITLE_LEVEL_DEFAULTS = ("IV", "V", "VI", "4", "5", "6")
@@ -335,6 +336,7 @@ class WorkdayScout:
         request_interval_seconds: float = 2.5,
         retry_backoff_seconds: tuple[float, ...] | list[float] = DEFAULT_BACKOFF_SECONDS,
         retry_backoff_cap_seconds: float = DEFAULT_BACKOFF_CAP_SECONDS,
+        http2: bool = False,
         client: httpx.AsyncClient | None = None,
     ):
         self.timeout = timeout
@@ -342,7 +344,10 @@ class WorkdayScout:
         self.request_interval_seconds = request_interval_seconds
         self.retry_backoff_seconds = tuple(retry_backoff_seconds)
         self.retry_backoff_cap_seconds = retry_backoff_cap_seconds
-        self.client = client or httpx.AsyncClient(timeout=timeout, follow_redirects=True)
+        self.http2 = http2
+        self.client = client or httpx.AsyncClient(
+            timeout=timeout, follow_redirects=True, http2=http2
+        )
         self._owns_client = client is None
         self._host_semaphores: dict[str, asyncio.Semaphore] = {}
         self._last_request_by_host: dict[str, float] = {}
@@ -355,6 +360,7 @@ class WorkdayScout:
         self.pending_details_count = 0
         self.closed_count = 0
         self._unknown_age_labels_logged: set[str] = set()
+        self._request_debug_logged: set[str] = set()
 
     async def close(self) -> None:
         if self._owns_client:
@@ -375,6 +381,7 @@ class WorkdayScout:
         *,
         json_body: dict[str, Any] | None = None,
         language: bool = False,
+        tenant: WorkdayTenantConfig | None = None,
     ) -> dict[str, Any]:
         # robots.txt checked 2026-11-16: /refreshFacet/ is disallowed; /wday/ is not.
         # Keep this request-level guard even if another caller supplies a URL.
@@ -387,10 +394,12 @@ class WorkdayScout:
             )
         semaphore = self._host_semaphores.setdefault(host, asyncio.Semaphore(1))
         headers = dict(HEADERS)
+        if tenant is not None:
+            origin = f"https://{tenant.host}"
+            headers["Origin"] = origin
+            headers["Referer"] = f"{origin}/{tenant.site}"
         if method == "POST":
             headers["Content-Type"] = "application/json"
-        if language:
-            headers["Accept-Language"] = "en-US"
 
         async with semaphore:
             for attempt in range(self.retries + 1):
@@ -404,6 +413,15 @@ class WorkdayScout:
                     response = await self.client.request(
                         method, url, headers=headers, json=json_body
                     )
+                    debug_key = tenant.tenant if tenant is not None else host
+                    if debug_key not in self._request_debug_logged:
+                        request_headers = response.request.headers
+                        header_names = sorted(name.lower() for name in request_headers.keys())
+                        LOG.debug(
+                            "Workday tenant %s request header names=%s negotiated HTTP version=%s",
+                            debug_key, header_names, response.http_version,
+                        )
+                        self._request_debug_logged.add(debug_key)
                 except (httpx.TransportError, OSError):
                     if attempt >= self.retries:
                         raise
@@ -465,7 +483,7 @@ class WorkdayScout:
             "offset": offset,
             "searchText": search_text,
         }
-        payload = await self._request_json("POST", url, json_body=body)
+        payload = await self._request_json("POST", url, json_body=body, tenant=tenant)
         postings = payload.get("jobPostings")
         total = payload.get("total")
         if isinstance(total, bool) or not isinstance(total, int) or not isinstance(postings, list):
@@ -476,7 +494,7 @@ class WorkdayScout:
         self, tenant: WorkdayTenantConfig, list_job: dict[str, Any]
     ) -> dict[str, Any]:
         url = f"{self._base_url(tenant)}{list_job['external_path']}"
-        return await self._request_json("GET", url, language=True)
+        return await self._request_json("GET", url, language=True, tenant=tenant)
 
     async def fetch_first_page(
         self, tenant: WorkdayTenantConfig, search_text: str | None = None

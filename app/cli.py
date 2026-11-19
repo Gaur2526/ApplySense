@@ -59,6 +59,7 @@ async def check_greenhouse_company(identifier: str, config) -> tuple[bool, list[
         concurrency=config.scout.concurrency,
         retry_backoff_seconds=config.scout.retry_backoff_seconds,
         retry_backoff_cap_seconds=config.scout.retry_backoff_cap_seconds,
+        http2=config.workday.http2,
     )
     try:
         return True, await scout.fetch_jobs(identifier)

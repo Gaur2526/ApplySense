@@ -11,6 +11,9 @@ scout:
   retry_backoff_cap_seconds: 120
   rate_limit_cooldown_seconds: 7200
 
+workday:
+  http2: false
+
 filters:
   keywords:
     - software engineer

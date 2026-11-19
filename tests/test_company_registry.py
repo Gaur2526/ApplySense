@@ -29,27 +29,27 @@ def test_registry_contains_exactly_the_pdf_companies_once():
     assert names[46] == "Salesforce"
 
 
-def test_pending_companies_are_preserved_with_only_mongodb_and_walmart_verified():
+def test_pending_companies_are_preserved_with_verified_greenhouse_and_workday_entries():
     entries = load_registry()
     assert len(entries) == 47
-    pending = [entry for entry in entries if entry.company_name not in {"MongoDB", "Walmart"}]
+    pending = [entry for entry in entries if entry.company_name not in {"MongoDB", "Walmart", "Salesforce"}]
     assert all(entry.status == "pending_verification" for entry in pending)
     assert all(
         entry.ats_provider is None
-        for entry in pending if entry.company_name != "Salesforce"
+        for entry in pending
     )
     assert all(
         entry.board_identifier is None
-        for entry in pending if entry.company_name != "Salesforce"
+        for entry in pending
     )
     mongodb = next(entry for entry in entries if entry.company_name == "MongoDB")
     assert (mongodb.status, mongodb.ats_provider, mongodb.board_identifier) == ("verified", "greenhouse", "mongodb")
     assert verified_greenhouse_entries(entries) == [mongodb]
     walmart = next(entry for entry in entries if entry.company_name == "Walmart")
-    assert verified_workday_entries(entries) == [walmart]
     salesforce = next(entry for entry in entries if entry.company_name == "Salesforce")
-    assert salesforce.status == "pending_verification"
+    assert salesforce.status == "verified"
     assert salesforce.workday is not None and salesforce.workday.tenant == "salesforce"
+    assert verified_workday_entries(entries) == [walmart, salesforce]
 
 
 def test_walmart_workday_settings_are_configured_and_verified():
@@ -146,4 +146,4 @@ def test_discovery_fetches_verified_boards_without_real_http(monkeypatch):
     monkeypatch.setattr("app.main.WorkdayScout", WorkdayMustNotFetch)
     assert asyncio.run(discover(config, dry_run=True)) == []
     assert fetched == ["mongodb"]
-    assert workday_fetched == ["walmart"]
+    assert workday_fetched == ["walmart", "salesforce"]
