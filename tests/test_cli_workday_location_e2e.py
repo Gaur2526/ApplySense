@@ -76,6 +76,9 @@ def _install_live_config_http_fixture(monkeypatch, tmp_path):
         return real_async_client(*args, **kwargs)
 
     monkeypatch.setattr(httpx, "AsyncClient", mock_transport_client)
+    async def skip_request_pacing_in_mocked_cli_run(_seconds):
+        return None
+    monkeypatch.setattr("app.scouts.workday.asyncio.sleep", skip_request_pacing_in_mocked_cli_run)
     # Keep the real config loader and YAML, while isolating its optional
     # database read so tenant throttling cannot suppress the HTTP fixture.
     monkeypatch.chdir(PROJECT_ROOT)

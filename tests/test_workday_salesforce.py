@@ -43,8 +43,9 @@ def test_registry_adds_salesforce_without_changing_tenant_request_settings():
         "country_facet_key": "CF_-_REC_-_LRV_-_Job_Posting_Anchor_-_Country_from_Job_Posting_Location_Extended",
         "country_facet_id": "c4f78be1a8f14da0ab49ce1162348a5e",
         "assume_country": "IN", "search_texts": ["software"], "page_size": 20,
-        "max_pages": 15, "max_detail_requests_per_run": 30,
-        "min_interval_seconds": 3600, "reevaluate_after_days": 14,
+        "max_pages": 15, "max_detail_requests_per_run": 10,
+        "min_interval_seconds": 3600, "request_interval_seconds": 6.0,
+        "details_interval_seconds": 6.0, "reevaluate_after_days": 14,
         "excluded_title_levels": ["IV", "V", "VI", "4", "5", "6"],
     }
 
@@ -52,7 +53,9 @@ def test_registry_adds_salesforce_without_changing_tenant_request_settings():
 @pytest.mark.parametrize("tenant_index", [0, 1], ids=["walmart", "salesforce"])
 def test_workday_request_body_uses_each_tenants_facet_key(tenant_index):
     tenants = registry_tenants()
-    tenant = tenants[tenant_index]
+    tenant = tenants[tenant_index].model_copy(update={
+        "request_interval_seconds": 0, "details_interval_seconds": 0,
+    })
     captured = []
 
     def handler(request):
@@ -82,7 +85,9 @@ def test_workday_headers_are_tenant_derived_for_list_and_details(tenant_index, c
     import logging
 
     tenants = registry_tenants()
-    tenant = tenants[tenant_index]
+    tenant = tenants[tenant_index].model_copy(update={
+        "request_interval_seconds": 0, "details_interval_seconds": 0,
+    })
     captured = []
 
     def handler(request):
@@ -128,6 +133,112 @@ def test_workday_http2_is_disabled_by_default():
     assert scout.http2 is False
     import asyncio
     asyncio.run(scout.close())
+
+
+def test_tenant_request_and_detail_intervals_fall_back_and_override_global():
+    walmart, salesforce = registry_tenants()
+    scout = WorkdayScout(request_interval_seconds=2.5)
+    assert scout._request_interval(walmart, "POST", walmart.host) == 2.5
+    assert scout._request_interval(walmart, "GET", walmart.host) == 2.5
+    assert scout._request_interval(salesforce, "POST", salesforce.host) == 6
+    assert scout._request_interval(salesforce, "GET", salesforce.host) == 6
+    inherited = walmart.model_copy(update={
+        "host": "custom.example", "request_interval_seconds": None,
+        "details_interval_seconds": None,
+    })
+    assert scout._request_interval(inherited, "GET", "custom.example") == 2.5
+    tenant_override = inherited.model_copy(update={"request_interval_seconds": 4})
+    assert scout._request_interval(tenant_override, "POST", "custom.example") == 4
+    assert scout._request_interval(tenant_override, "GET", "custom.example") == 4
+    import asyncio
+    asyncio.run(scout.close())
+
+
+def test_recovered_429_doubles_host_interval_once_for_rest_of_run(monkeypatch, caplog):
+    import asyncio
+    import logging
+    import app.scouts.workday as workday_module
+
+    walmart, _salesforce = registry_tenants()
+    requests = []
+    sleeps = []
+
+    def handler(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(429, request=request)
+        return httpx.Response(200, json={"total": 0, "jobPostings": []}, request=request)
+
+    async def no_backoff(*_args, **_kwargs):
+        return None
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(workday_module, "_wait_before_retry", no_backoff)
+    monkeypatch.setattr(workday_module.asyncio, "sleep", record_sleep)
+
+    async def scenario():
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        scout = WorkdayScout(client=client, retries=1, request_interval_seconds=2.5)
+        try:
+            await scout.fetch_first_page(walmart)
+            await scout.fetch_first_page(walmart)
+            return scout._host_slowdown_factor[walmart.host]
+        finally:
+            await scout.close()
+
+    with caplog.at_level(logging.INFO, logger="app.scouts.workday"):
+        factor = asyncio.run(scenario())
+    assert len(requests) == 3
+    assert factor == 2
+    assert sleeps[0] == pytest.approx(2.5, abs=0.05)
+    assert sleeps[-1] == pytest.approx(5.0, abs=0.05)
+    assert caplog.text.count("host pacing doubled") == 1
+
+
+def test_pending_detail_titles_are_shown_without_company_or_identifiers(caplog):
+    import asyncio
+    import logging
+    from app.main import _log_source_summary
+
+    _walmart, salesforce = registry_tenants()
+    postings = [
+        {"title": "Software Engineer One", "externalPath": "/job/India-Hyderabad/one_JR-1",
+         "locationsText": "India - Hyderabad", "postedOn": "Posted Today", "bulletFields": ["JR-1"]},
+        {"title": "Software Engineer Two", "externalPath": "/job/India-Bangalore/two_JR-2",
+         "locationsText": "India - Bangalore", "postedOn": "Posted Today", "bulletFields": ["JR-2"]},
+    ]
+
+    def handler(request):
+        assert request.method == "POST"
+        return httpx.Response(200, json={"total": 2, "jobPostings": postings}, request=request)
+
+    async def scenario():
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        scout = WorkdayScout(client=client, request_interval_seconds=0)
+        try:
+            limited_tenant = salesforce.model_copy(update={"max_detail_requests_per_run": 0})
+            await scout.fetch_jobs(
+                "Salesforce", limited_tenant,
+                AppConfig.model_validate({"filters": {"keywords": ["software engineer"]}}),
+                run_time=RUN_TIME,
+            )
+            return scout.pending_details_count, list(scout.pending_detail_titles)
+        finally:
+            await scout.close()
+
+    count, titles = asyncio.run(scenario())
+    assert count == 2
+    assert titles == ["Software Engineer One", "Software Engineer Two"]
+    with caplog.at_level(logging.INFO, logger="app.main"):
+        _log_source_summary({"sources": {"workday/salesforce": {
+            "status": "rate_limited", "retry_after_seconds": 7200,
+            "pending_details": count, "pending_detail_titles": titles,
+        }}})
+    assert "pending titles: Software Engineer One, Software Engineer Two" in caplog.text
+    assert "Salesforce —" not in caplog.text
+    assert "JR-1" not in caplog.text
 
 
 def test_salesforce_fixture_normalizes_real_shape_and_registry_company_name():
@@ -204,8 +315,10 @@ def test_salesforce_html_entity_range_decodes_and_roles_boilerplate_is_ignored()
 @pytest.mark.parametrize("end_date,expected", [
     ("2026-11-23", "Apply by Nov 23 (4 days left)"),
     (None, None),
-    ("2026-11-17", "Apply by Nov 17 (0 days left)"),
-    ("2026-11-18", "Apply by Nov 18 (0 days left)"),
+    ("2026-11-21", "Apply by Nov 21 (2 days left)"),
+    ("2026-11-20", "Apply by Nov 20 (closing soon)"),
+    ("2026-11-17", "Apply by Nov 17 (closing soon)"),
+    ("2026-11-18", "Apply by Nov 18 (closing soon)"),
 ])
 def test_telegram_apply_by_line(end_date, expected):
     _walmart, tenant = registry_tenants()
@@ -224,6 +337,9 @@ def test_telegram_apply_by_line(end_date, expected):
 
 def test_salesforce_closed_job_is_counted_and_not_returned_for_pipeline():
     _walmart, tenant = registry_tenants()
+    tenant = tenant.model_copy(update={
+        "request_interval_seconds": 0, "details_interval_seconds": 0,
+    })
     payload = copy.deepcopy(SALESFORCE_DETAILS)
     payload["jobPostingInfo"]["endDate"] = "2026-11-17"
     posting = dict(SALESFORCE_LIST["jobPostings"][0])

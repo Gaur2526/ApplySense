@@ -353,11 +353,14 @@ class WorkdayScout:
         self._last_request_by_host: dict[str, float] = {}
         self._consecutive_rate_limited_requests: dict[str, int] = {}
         self._open_circuits: set[str] = set()
+        self._host_slowdown_factor: dict[str, float] = {}
+        self._adaptive_slowdown_logged: set[str] = set()
         self.rate_limited = False
         self.rate_limit_host: str | None = None
         self.rate_limit_retry_after: str | None = None
         self.rate_limit_retry_after_seconds: float | None = None
         self.pending_details_count = 0
+        self.pending_detail_titles: list[str] = []
         self.closed_count = 0
         self._unknown_age_labels_logged: set[str] = set()
         self._request_debug_logged: set[str] = set()
@@ -373,6 +376,21 @@ class WorkdayScout:
 
     def _base_url(self, tenant: WorkdayTenantConfig) -> str:
         return f"https://{tenant.host}/wday/cxs/{tenant.tenant}/{tenant.site}"
+
+    def _request_interval(self, tenant: WorkdayTenantConfig | None, method: str, host: str) -> float:
+        request_interval = (
+            tenant.request_interval_seconds
+            if tenant is not None and tenant.request_interval_seconds is not None
+            else self.request_interval_seconds
+        )
+        details_interval = (
+            tenant.details_interval_seconds
+            if tenant is not None and tenant.details_interval_seconds is not None
+            else request_interval
+        )
+        base = details_interval if method.upper() == "GET" else request_interval
+        factor = self._host_slowdown_factor.get(host, 1.0)
+        return min(15.0, base * factor)
 
     async def _request_json(
         self,
@@ -393,6 +411,7 @@ class WorkdayScout:
                 circuit_open=True,
             )
         semaphore = self._host_semaphores.setdefault(host, asyncio.Semaphore(1))
+        had_429 = False
         headers = dict(HEADERS)
         if tenant is not None:
             origin = f"https://{tenant.host}"
@@ -404,8 +423,9 @@ class WorkdayScout:
         async with semaphore:
             for attempt in range(self.retries + 1):
                 last_request = self._last_request_by_host.get(host)
-                if last_request is not None and self.request_interval_seconds > 0:
-                    remaining = self.request_interval_seconds - (time.monotonic() - last_request)
+                request_interval = self._request_interval(tenant, method, host)
+                if last_request is not None and request_interval > 0:
+                    remaining = request_interval - (time.monotonic() - last_request)
                     if remaining > 0:
                         await asyncio.sleep(remaining)
                 self._last_request_by_host[host] = time.monotonic()
@@ -449,6 +469,7 @@ class WorkdayScout:
                             )
                         response.raise_for_status()
                     if response.status_code == 429:
+                        had_429 = True
                         LOG.info(
                             "Workday host %s returned HTTP 429; Retry-After=%s; retrying",
                             host, retry_after_header(response) or "absent",
@@ -461,6 +482,16 @@ class WorkdayScout:
                     continue
                 response.raise_for_status()
                 self._consecutive_rate_limited_requests[host] = 0
+                if had_429 and tenant is not None:
+                    factor = self._host_slowdown_factor.get(host, 1.0) * 2
+                    self._host_slowdown_factor[host] = factor
+                    if host not in self._adaptive_slowdown_logged:
+                        slowed_to = self._request_interval(tenant, method, host)
+                        LOG.info(
+                            "Workday tenant %s recovered after HTTP 429; host pacing doubled to %.1fs (15s cap)",
+                            tenant.tenant, slowed_to,
+                        )
+                        self._adaptive_slowdown_logged.add(host)
                 try:
                     payload = response.json()
                 except ValueError as exc:
@@ -554,6 +585,7 @@ class WorkdayScout:
         self.rate_limit_retry_after = None
         self.rate_limit_retry_after_seconds = None
         self.pending_details_count = 0
+        self.pending_detail_titles = []
         self.closed_count = 0
         known = known_source_ids or set()
         recently_evaluated = recently_evaluated_source_ids or set()
@@ -602,7 +634,9 @@ class WorkdayScout:
         real_age_disagreements = 0
         for candidate_index, item in enumerate(candidates):
             if details_count >= tenant.max_detail_requests_per_run:
-                self.pending_details_count += len(candidates) - candidate_index
+                pending = candidates[candidate_index:]
+                self.pending_details_count += len(pending)
+                self.pending_detail_titles.extend(str(item.get("title") or "Untitled") for item in pending)
                 break
             details_count += 1
             try:
@@ -613,8 +647,13 @@ class WorkdayScout:
                 self.rate_limit_retry_after = exc.retry_after
                 self.rate_limit_retry_after_seconds = exc.retry_after_seconds
                 self.pending_details_count += 1
+                self.pending_detail_titles.append(str(item.get("title") or "Untitled"))
                 if exc.circuit_open:
-                    self.pending_details_count += len(candidates) - candidate_index - 1
+                    pending = candidates[candidate_index + 1:]
+                    self.pending_details_count += len(pending)
+                    self.pending_detail_titles.extend(
+                        str(pending_item.get("title") or "Untitled") for pending_item in pending
+                    )
                     break
                 # Keep trying in feed order. Successful details remain usable;
                 # this requisition is not returned or remembered and is retried

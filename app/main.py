@@ -256,6 +256,7 @@ async def _discover_workday(
                         "status": status,
                         "retry_after_seconds": config.scout.rate_limit_cooldown_seconds,
                         "pending_details": pending_details,
+                        "pending_detail_titles": list(getattr(scout, "pending_detail_titles", [])),
                         "closed": getattr(scout, "closed_count", 0),
                     }
                     stats["pending_details"] = stats.get("pending_details", 0) + pending_details
@@ -405,18 +406,21 @@ def _log_source_summary(discovery_stats: dict) -> None:
     for source, outcome in sorted(discovery_stats.get("sources", {}).items()):
         status = outcome.get("status", "failed")
         pending = int(outcome.get("pending_details", 0))
+        pending_titles = outcome.get("pending_detail_titles") or []
+        clean_titles = [" ".join(str(title).split()) for title in pending_titles]
+        titles_text = f"; pending titles: {', '.join(clean_titles)}" if clean_titles else ""
         if status == "rate_limited":
             seconds = max(0.0, float(outcome.get("retry_after_seconds", 0)))
             retry_minutes = max(1, ceil(seconds / 60))
             LOG.info(
-                "Source %s: rate limited, retry after about %d min; pending details=%d",
-                source, retry_minutes, pending,
+                "Source %s: rate limited, retry after about %d min; pending details=%d%s",
+                source, retry_minutes, pending, titles_text,
             )
         elif status == "failed":
-            LOG.info("Source %s: failed; pending details=%d", source, pending)
+            LOG.info("Source %s: failed; pending details=%d%s", source, pending, titles_text)
         else:
-            LOG.info("Source %s: ok; pending details=%d; closed=%d",
-                     source, pending, int(outcome.get("closed", 0)))
+            LOG.info("Source %s: ok; pending details=%d; closed=%d%s",
+                     source, pending, int(outcome.get("closed", 0)), titles_text)
 
 
 def run(

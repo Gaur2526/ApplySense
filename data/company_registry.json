@@ -233,6 +233,8 @@
       "max_pages": 15,
       "max_detail_requests_per_run": 30,
       "min_interval_seconds": 3600,
+      "request_interval_seconds": 2.5,
+      "details_interval_seconds": 2.5,
       "reevaluate_after_days": 14,
       "excluded_title_levels": ["IV", "V", "VI", "4", "5", "6"]
     }
@@ -351,8 +353,10 @@
       "search_texts": ["software"],
       "page_size": 20,
       "max_pages": 15,
-      "max_detail_requests_per_run": 30,
-      "min_interval_seconds": 3600
+      "max_detail_requests_per_run": 10,
+      "min_interval_seconds": 3600,
+      "request_interval_seconds": 6,
+      "details_interval_seconds": 6
     }
   }
 ]

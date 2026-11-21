@@ -24,6 +24,8 @@ class WorkdayTenantConfig(BaseModel):
     max_pages: int = Field(default=10, ge=1, le=100)
     max_detail_requests_per_run: int = Field(default=30, ge=0, le=500)
     min_interval_seconds: int = Field(default=3600, ge=0, le=31_536_000)
+    request_interval_seconds: float | None = Field(default=None, ge=0, le=120)
+    details_interval_seconds: float | None = Field(default=None, ge=0, le=120)
     reevaluate_after_days: int = Field(default=14, ge=1, le=365)
     excluded_title_levels: list[str] = Field(default_factory=lambda: ["IV", "V", "VI", "4", "5", "6"])
 

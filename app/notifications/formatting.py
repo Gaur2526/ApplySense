@@ -132,7 +132,9 @@ def format_job(job: dict, *, limit: int = 4096, run_time=None) -> str:
         if isinstance(apply_by, date):
             today = (run_time or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
             days_left = max(0, (apply_by - today).days - 1)
-            lines.append(f"Apply by {apply_by.strftime('%b')} {apply_by.day} ({days_left} days left)")
+            countdown = f"{days_left} {'day' if days_left == 1 else 'days'} left"
+            remaining = "closing soon" if days_left <= 1 else countdown
+            lines.append(f"Apply by {apply_by.strftime('%b')} {apply_by.day} ({remaining})")
     if job.get("experience_requirement") is not None:
         lines.append(f"Experience: {job['experience_requirement']}+ years")
     checks = _uncertainty_labels(job)
