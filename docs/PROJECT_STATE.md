@@ -45,6 +45,18 @@ max_min_years 2 (reject only if the MINIMUM required years exceeds it); max_age_
 ## Samples and fixtures
 Raw captures live outside the repo in ~/applysense-samples/. Only trimmed, name-free fixtures go in tests/fixtures/. The Accenture findjobs sample was seen but no adapter exists.
 
+## Report format and workflow (every agent, every task)
+End every report in exactly this format:
+TASK: <one line>
+FILES CHANGED: <list>
+TESTS: <number passed/failed, and the new test names>
+BEHAVIOR CHANGES: <what a user would notice in real runs>
+DECISIONS NEEDED FROM CLAUDE: <questions you were unsure about, or "none">
+RISKS / LIMITATIONS: <list>
+PROPOSED COMMIT MESSAGE: <one line, plain text>
+Do not run git commit or git push; the user commits. Before finishing, append ONE line at the very end of this file (a new line after the last line, never changing earlier lines) in this form: "- YYYY-MM-DD: <task>. Commit message: <the proposed message>. Tests: <N passed>. Decisions needed: <none or short note>." Then wait for approval.
+
+
 ## Status log (agents append one line per task)
 - 2026-11-22: Walmart list scan read only 2 pages on a live run (open bug); Salesforce still 429.
 - 2026-11-22: Fix Walmart Workday list scans stopping early and report page progress. Commit message: Fix Workday pagination and report scan progress. Tests: 327 passed. Decisions needed: none.
