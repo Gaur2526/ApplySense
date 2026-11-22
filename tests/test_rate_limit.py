@@ -16,11 +16,11 @@ import app.scouts.workday as workday_module
 from app.companies.registry import WorkdayTenantConfig, load_registry, verified_workday_entries
 from app.config import AppConfig
 from app.database.connection import initialize_database, make_engine, make_session_factory
-from app.database.models import EvaluatedJob, Run, utc_now
+from app.database.models import EvaluatedJob, Run, WorkdayScanState, utc_now
 from app.database.repository import JobRepository
 from app.scouts.retry import retry_after_seconds, wait_before_retry
 from app.scouts.greenhouse import GreenhouseRateLimitedError, GreenhouseScout
-from app.scouts.workday import WorkdayScout
+from app.scouts.workday import WorkdayRateLimitedError, WorkdayScout
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,6 +97,29 @@ def test_retry_after_seconds_and_http_date_are_supported():
     retry_at = fixed_now + timedelta(seconds=75)
     http_date = httpx.Response(429, headers={"Retry-After": format_datetime(retry_at, usegmt=True)})
     assert retry_after_seconds(http_date, now=fixed_now) == 75
+
+
+def test_workday_tenant_retry_override_limits_attempts_without_changing_global_default(monkeypatch):
+    assert AppConfig().scout.retries == 3
+    attempts = []
+
+    async def no_backoff(*_args, **_kwargs):
+        return 0
+
+    monkeypatch.setattr(workday_module, "_wait_before_retry", no_backoff)
+
+    def handler(request):
+        attempts.append(request)
+        return httpx.Response(429, request=request)
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            scout = WorkdayScout(client=client, retries=AppConfig().scout.retries)
+            with pytest.raises(WorkdayRateLimitedError):
+                await scout.fetch_first_page(tenant(max_retries=2))
+
+    run_async(scenario())
+    assert len(attempts) == 3
 
 
 def test_workday_default_pacing_is_2_5_seconds_across_list_and_details(monkeypatch):
@@ -472,15 +495,126 @@ def test_rate_limited_tenant_run_persists_configured_cooldown(tmp_path, monkeypa
     engine.dispose()
 
 
+def test_incomplete_scan_resumes_offsets_and_pending_details_survive_partial_scan(tmp_path, monkeypatch):
+    registry = load_registry(ROOT / "data/company_registry.json")
+    walmart = next(item for item in verified_workday_entries(registry) if item.company_name == "Walmart")
+    tenant_config = walmart.workday.model_copy(update={
+        "search_texts": ["software engineer"],
+        "page_size": 1,
+        "max_pages": 5,
+        "max_detail_requests_per_run": 10,
+        "min_interval_seconds": 0,
+        "request_interval_seconds": 0,
+        "details_interval_seconds": 0,
+        "max_retries": 0,
+    })
+    test_entry = walmart.model_copy(update={"workday": tenant_config})
+    database_url = f"sqlite:///{tmp_path / 'resumable-workday.db'}"
+    engine = make_engine(database_url)
+    initialize_database(engine)
+    engine.dispose()
+
+    phase = "first"
+    requests = []
+    real_async_client = httpx.AsyncClient
+
+    def client_with_mock(*args, **kwargs):
+        def handler(request):
+            nonlocal phase
+            if request.method == "POST":
+                offset = json.loads(request.content)["offset"]
+                requests.append((phase, "POST", offset))
+                if phase in {"first", "second"} and offset == 1:
+                    return httpx.Response(429, request=request)
+                ids = {0: "R-1", 1: "R-2", 2: "R-3"}
+                return httpx.Response(200, json={
+                    "total": 3, "jobPostings": postings(ids[offset]),
+                }, request=request)
+            req_id = request.url.path.rsplit("_", 1)[-1]
+            requests.append((phase, "GET", req_id))
+            if phase == "first" and req_id == "R-1":
+                return httpx.Response(429, request=request)
+            return httpx.Response(200, json=details(req_id), request=request)
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_with_mock)
+    cfg = app_config(database_url, rate_limit_cooldown_seconds=7200)
+
+    async def discover_once(*, force, stats):
+        return await main._discover_workday(
+            cfg, [test_entry], stats=stats, include_rejected=False,
+            dry_run=False, force=force, run_time=datetime.now(timezone.utc),
+        )
+
+    first_stats = {"sources": {}, "errors": 0}
+    first_jobs = run_async(discover_once(force=True, stats=first_stats))
+    assert first_jobs == []
+    assert [(method, value) for _phase, method, value in requests] == [
+        ("POST", 0), ("POST", 1), ("GET", "R-1"),
+    ]
+    assert first_stats["sources"]["workday/walmart"]["incomplete_scans"]["software engineer"] == {
+        "unreached_offsets": [1, 2], "pages_read": 1, "total_pages": 3,
+    }
+
+    engine = make_engine(database_url)
+    with make_session_factory(engine)() as session:
+        repo = JobRepository(session)
+        assert repo.workday_scan_states("walmart")["software engineer"]["unreached_offsets"] == [1, 2]
+        pending = repo.workday_pending_details("walmart")
+        assert [item["source_id"] for item in pending] == ["walmart/R-1"]
+    engine.dispose()
+
+    phase = "cooldown"
+    cooldown_stats = {"sources": {}, "errors": 0}
+    request_count = len(requests)
+    assert run_async(discover_once(force=False, stats=cooldown_stats)) == []
+    assert len(requests) == request_count
+    assert cooldown_stats["sources"]["workday/walmart"]["pending_detail_titles"] == ["Software Engineer"]
+    assert cooldown_stats["sources"]["workday/walmart"]["incomplete_scans"]["software engineer"]["pages_read"] == 1
+
+    phase = "second"
+    second_stats = {"sources": {}, "errors": 0}
+    second_jobs = run_async(discover_once(force=True, stats=second_stats))
+    second_phase_requests = [(method, value) for run_phase, method, value in requests if run_phase == "second"]
+    assert second_phase_requests == [("POST", 1), ("GET", "R-1")]
+    assert [job["source_id"] for job in second_jobs] == ["walmart/R-1"]
+    assert second_stats["sources"]["workday/walmart"]["incomplete_scans"]["software engineer"]["unreached_offsets"] == [1, 2]
+    engine = make_engine(database_url)
+    with make_session_factory(engine)() as session:
+        assert session.scalar(select(WorkdayScanState).where(
+            WorkdayScanState.tenant_key == "walmart"
+        )) is not None
+        assert JobRepository(session).workday_pending_details("walmart") == []
+    engine.dispose()
+
+    phase = "complete"
+    complete_stats = {"sources": {}, "errors": 0}
+    run_async(discover_once(force=True, stats=complete_stats))
+    complete_offsets = [value for run_phase, method, value in requests
+                        if run_phase == "complete" and method == "POST"]
+    assert complete_offsets == [1, 2, 0, 1, 2]
+    assert complete_stats["sources"]["workday/walmart"]["incomplete_scans"] == {}
+    engine = make_engine(database_url)
+    with make_session_factory(engine)() as session:
+        assert JobRepository(session).workday_scan_states("walmart") == {}
+    engine.dispose()
+
 def test_source_summary_formats_rate_limit_pending_and_failures(caplog):
     caplog.set_level("INFO")
     main._log_source_summary({"sources": {
         "workday/walmart": {
             "status": "rate_limited", "retry_after_seconds": 7200, "pending_details": 4,
+            "pending_detail_titles": ["Software Engineer"],
+            "incomplete_scans": {"software": {
+                "pages_read": 1, "total_pages": 3, "unreached_offsets": [20, 40],
+            }},
         },
         "greenhouse/MongoDB": {"status": "ok", "pending_details": 0},
         "workday/other": {"status": "failed", "pending_details": 1},
     }})
     assert "Source workday/walmart: rate limited, retry after about 120 min; pending details=4" in caplog.text
+    assert "pending titles: Software Engineer" in caplog.text
+    assert "incomplete scan: pages 1 of 3 (software)" in caplog.text
     assert "Source greenhouse/MongoDB: ok; pending details=0" in caplog.text
     assert "Source workday/other: failed; pending details=1" in caplog.text

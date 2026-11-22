@@ -162,7 +162,9 @@ async def _discover_workday(
                             cooldown_until = cooldown_until.replace(tzinfo=timezone.utc)
                         remaining = (cooldown_until - utc_now()).total_seconds()
                         if remaining > 0 and not force:
-                            pending = repo.last_tenant_pending_details("workday", tenant.tenant)
+                            persisted_pending = repo.workday_pending_details(tenant.tenant)
+                            pending = len(persisted_pending) or repo.last_tenant_pending_details("workday", tenant.tenant)
+                            scan_states = repo.workday_scan_states(tenant.tenant)
                             LOG.info(
                                 "Skipping Workday tenant %s during rate-limit cooldown (%d seconds remain)",
                                 tenant.tenant, int(remaining),
@@ -172,6 +174,8 @@ async def _discover_workday(
                                     "status": "rate_limited",
                                     "retry_after_seconds": remaining,
                                     "pending_details": pending,
+                                    "pending_detail_titles": [item.get("title", "Untitled") for item in persisted_pending],
+                                    "incomplete_scans": scan_states,
                                 }
                                 stats["pending_details"] = stats.get("pending_details", 0) + pending
                             continue
@@ -186,9 +190,14 @@ async def _discover_workday(
                     ):
                         LOG.info("Skipping Workday tenant %s because its minimum interval has not elapsed", tenant.tenant)
                         if stats is not None:
+                            persisted_pending = repo.workday_pending_details(tenant.tenant)
                             stats.setdefault("sources", {})[f"workday/{tenant.tenant}"] = {
-                                "status": "ok", "pending_details": 0,
+                                "status": "ok",
+                                "pending_details": len(persisted_pending),
+                                "pending_detail_titles": [item.get("title", "Untitled") for item in persisted_pending],
+                                "incomplete_scans": repo.workday_scan_states(tenant.tenant),
                             }
+                            stats["pending_details"] = stats.get("pending_details", 0) + len(persisted_pending)
                         continue
                     known_ids = repo.job_source_ids_for_source("workday")
                     evaluated_ids = repo.evaluated_source_ids_for_source("workday")
@@ -211,15 +220,25 @@ async def _discover_workday(
                     if not dry_run:
                         source_run = repo.create_run(source="workday", tenant_key=tenant.tenant)
 
+                resume_offsets = repo.workday_scan_states(tenant.tenant) if repo is not None else {}
+                pending_detail_jobs = repo.workday_pending_details(tenant.tenant) if repo is not None else []
+
                 try:
+                    fetch_kwargs = {
+                        "known_source_ids": known_ids,
+                        "recently_evaluated_source_ids": recent_ids,
+                        "baseline_mode": baseline_mode,
+                        "run_time": run_time,
+                    }
+                    if resume_offsets:
+                        fetch_kwargs["resume_offsets"] = resume_offsets
+                    if pending_detail_jobs:
+                        fetch_kwargs["pending_detail_jobs"] = pending_detail_jobs
                     evaluations = await scout.fetch_jobs(
                         company.company_name,
                         tenant,
                         config,
-                        known_source_ids=known_ids,
-                        recently_evaluated_source_ids=recent_ids,
-                        baseline_mode=baseline_mode,
-                        run_time=run_time,
+                        **fetch_kwargs,
                     )
                 except Exception as exc:
                     LOG.error(
@@ -257,6 +276,7 @@ async def _discover_workday(
                         "retry_after_seconds": config.scout.rate_limit_cooldown_seconds,
                         "pending_details": pending_details,
                         "pending_detail_titles": list(getattr(scout, "pending_detail_titles", [])),
+                        "incomplete_scans": dict(getattr(scout, "incomplete_scans", {})),
                         "closed": getattr(scout, "closed_count", 0),
                     }
                     stats["pending_details"] = stats.get("pending_details", 0) + pending_details
@@ -274,6 +294,12 @@ async def _discover_workday(
                         )
                     ]
                 if repo is not None and not dry_run:
+                    repo.replace_workday_scan_states(
+                        tenant.tenant, getattr(scout, "incomplete_scans", {})
+                    )
+                    repo.replace_workday_pending_details(
+                        tenant.tenant, getattr(scout, "pending_detail_items", [])
+                    )
                     repo.record_evaluations([
                         {
                             "source": "workday",
@@ -409,18 +435,27 @@ def _log_source_summary(discovery_stats: dict) -> None:
         pending_titles = outcome.get("pending_detail_titles") or []
         clean_titles = [" ".join(str(title).split()) for title in pending_titles]
         titles_text = f"; pending titles: {', '.join(clean_titles)}" if clean_titles else ""
+        scan_states = outcome.get("incomplete_scans") or {}
+        scan_parts = []
+        for search_text, state in sorted(scan_states.items()):
+            total_pages = state.get("total_pages")
+            total_text = str(total_pages) if total_pages is not None else "unknown"
+            scan_parts.append(
+                f"pages {int(state.get('pages_read', 0))} of {total_text} ({search_text})"
+            )
+        scan_text = f"; incomplete scan: {'; '.join(scan_parts)}" if scan_parts else ""
         if status == "rate_limited":
             seconds = max(0.0, float(outcome.get("retry_after_seconds", 0)))
             retry_minutes = max(1, ceil(seconds / 60))
             LOG.info(
-                "Source %s: rate limited, retry after about %d min; pending details=%d%s",
-                source, retry_minutes, pending, titles_text,
+                "Source %s: rate limited, retry after about %d min; pending details=%d%s%s",
+                source, retry_minutes, pending, titles_text, scan_text,
             )
         elif status == "failed":
-            LOG.info("Source %s: failed; pending details=%d%s", source, pending, titles_text)
+            LOG.info("Source %s: failed; pending details=%d%s%s", source, pending, titles_text, scan_text)
         else:
-            LOG.info("Source %s: ok; pending details=%d; closed=%d%s",
-                     source, pending, int(outcome.get("closed", 0)), titles_text)
+            LOG.info("Source %s: ok; pending details=%d; closed=%d%s%s",
+                     source, pending, int(outcome.get("closed", 0)), titles_text, scan_text)
 
 
 def run(

@@ -361,9 +361,11 @@ class WorkdayScout:
         self.rate_limit_retry_after_seconds: float | None = None
         self.pending_details_count = 0
         self.pending_detail_titles: list[str] = []
+        self.pending_detail_items: list[dict[str, Any]] = []
         self.closed_count = 0
         self._unknown_age_labels_logged: set[str] = set()
         self._request_debug_logged: set[str] = set()
+        self.incomplete_scans: dict[str, dict[str, Any]] = {}
 
     async def close(self) -> None:
         if self._owns_client:
@@ -419,9 +421,10 @@ class WorkdayScout:
             headers["Referer"] = f"{origin}/{tenant.site}"
         if method == "POST":
             headers["Content-Type"] = "application/json"
+        retries = tenant.max_retries if tenant is not None and tenant.max_retries is not None else self.retries
 
         async with semaphore:
-            for attempt in range(self.retries + 1):
+            for attempt in range(retries + 1):
                 last_request = self._last_request_by_host.get(host)
                 request_interval = self._request_interval(tenant, method, host)
                 if last_request is not None and request_interval > 0:
@@ -443,7 +446,7 @@ class WorkdayScout:
                         )
                         self._request_debug_logged.add(debug_key)
                 except (httpx.TransportError, OSError):
-                    if attempt >= self.retries:
+                    if attempt >= retries:
                         raise
                     await _wait_before_retry(
                         attempt, backoff_seconds=self.retry_backoff_seconds,
@@ -451,7 +454,7 @@ class WorkdayScout:
                     )
                     continue
                 if response.status_code in RETRYABLE_STATUS_CODES:
-                    if attempt >= self.retries:
+                    if attempt >= retries:
                         if response.status_code == 429:
                             retry_value = retry_after_header(response)
                             self.rate_limited = True
@@ -534,33 +537,110 @@ class WorkdayScout:
             tenant, search_text or tenant.search_texts[0], offset=0
         )
 
-    async def list_jobs(self, company_name: str, tenant: WorkdayTenantConfig) -> list[dict[str, Any]]:
+    async def list_jobs(
+        self,
+        company_name: str,
+        tenant: WorkdayTenantConfig,
+        *,
+        resume_offsets: dict[str, dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         deduplicated: dict[str, dict[str, Any]] = {}
-        truncated_total: int | None = None
+        self.incomplete_scans = {}
+        prior_states = resume_offsets or {}
         rate_limited = False
-        for search_text in tenant.search_texts:
-            offset = 0
-            for page_index in range(tenant.max_pages):
+        truncated_total: int | None = None
+
+        def add_records(records: list[dict[str, Any]]) -> None:
+            for item in records:
+                normalized = _list_job(item, company_name, tenant)
+                if normalized is None:
+                    LOG.warning("Skipping malformed Workday list item for tenant %s", tenant.tenant)
+                    continue
+                deduplicated.setdefault(normalized["source_id"], normalized)
+
+        def remember_incomplete(
+            search_text: str, offsets: list[int], pages_read: int, total_pages: int | None,
+        ) -> None:
+            if offsets:
+                self.incomplete_scans[search_text] = {
+                    "unreached_offsets": sorted(set(offsets)),
+                    "pages_read": pages_read,
+                    "total_pages": total_pages,
+                }
+
+        def page_offsets_from(start: int, total_pages: int | None) -> list[int]:
+            if total_pages is None:
+                return [start]
+            return list(range(start, total_pages * tenant.page_size, tenant.page_size))
+
+        for search_index, search_text in enumerate(tenant.search_texts):
+            prior = prior_states.get(search_text) or {}
+            pending_offsets = sorted({
+                int(offset) for offset in prior.get("unreached_offsets", [])
+                if isinstance(offset, int) and offset >= 0
+            })
+            pages_read = int(prior.get("pages_read") or 0) if pending_offsets else 0
+            total_pages = prior.get("total_pages") if pending_offsets else None
+            budget = tenant.max_pages
+            stopped_for_rate_limit = False
+
+            # Drain persisted offsets before starting a fresh scan at offset 0.
+            while pending_offsets and budget > 0:
+                offset = pending_offsets.pop(0)
                 try:
                     total, records = await self.fetch_list_page(tenant, search_text, offset)
                 except WorkdayRateLimitedError:
-                    rate_limited = True
+                    rate_limited = stopped_for_rate_limit = True
+                    total_pages = total_pages or None
+                    remaining = page_offsets_from(offset, total_pages) if total_pages else [offset, *pending_offsets]
+                    remember_incomplete(search_text, remaining, pages_read, total_pages)
                     break
-                if not records:
-                    break
-                for item in records:
-                    normalized = _list_job(item, company_name, tenant)
-                    if normalized is None:
-                        LOG.warning("Skipping malformed Workday list item for tenant %s", tenant.tenant)
-                        continue
-                    deduplicated.setdefault(normalized["source_id"], normalized)
-                if len(records) < tenant.page_size:
-                    break
-                if page_index == tenant.max_pages - 1:
-                    truncated_total = max(truncated_total or 0, total)
-                offset += tenant.page_size
+                budget -= 1
+                pages_read += 1
+                total_pages = (total + tenant.page_size - 1) // tenant.page_size
+                add_records(records)
+                pending_offsets = [value for value in pending_offsets if value < total]
+
             if rate_limited:
                 break
+            if pending_offsets:
+                remember_incomplete(search_text, pending_offsets, pages_read, total_pages)
+                if budget == 0 and total_pages:
+                    truncated_total = max(truncated_total or 0, total_pages * tenant.page_size)
+                continue
+            if stopped_for_rate_limit:
+                break
+
+            # All old offsets were reached. Begin a fresh scan only now.
+            offset = 0
+            pages_read = 0
+            total_pages = None
+            completed = False
+            for _page_index in range(budget):
+                try:
+                    total, records = await self.fetch_list_page(tenant, search_text, offset)
+                except WorkdayRateLimitedError:
+                    rate_limited = stopped_for_rate_limit = True
+                    remaining = page_offsets_from(offset, total_pages) if total_pages else [offset]
+                    remember_incomplete(search_text, remaining, pages_read, total_pages)
+                    break
+                pages_read += 1
+                total_pages = (total + tenant.page_size - 1) // tenant.page_size
+                add_records(records)
+                if not records or len(records) < tenant.page_size or offset + tenant.page_size >= total:
+                    completed = True
+                    break
+                offset += tenant.page_size
+            if stopped_for_rate_limit:
+                break
+            if not completed and offset < (total_pages or 0) * tenant.page_size:
+                remaining = page_offsets_from(offset, total_pages)
+                remember_incomplete(search_text, remaining, pages_read, total_pages)
+                truncated_total = max(truncated_total or 0, total)
+        if rate_limited:
+            # The open host circuit prevented these later queries from being started.
+            for search_text in tenant.search_texts[search_index + 1:]:
+                remember_incomplete(search_text, [0], 0, None)
         if truncated_total is not None:
             LOG.warning(
                 "Workday tenant %s: max_pages reached, %d of total %d jobs seen; some jobs may be missing",
@@ -578,6 +658,8 @@ class WorkdayScout:
         recently_evaluated_source_ids: set[str] | None = None,
         baseline_mode: bool = False,
         run_time: datetime | None = None,
+        resume_offsets: dict[str, dict[str, Any]] | None = None,
+        pending_detail_jobs: list[dict[str, Any]] | None = None,
     ) -> list[WorkdayEvaluation]:
         run_time = run_time or datetime.now(timezone.utc)
         self.rate_limited = False
@@ -586,18 +668,36 @@ class WorkdayScout:
         self.rate_limit_retry_after_seconds = None
         self.pending_details_count = 0
         self.pending_detail_titles = []
+        self.pending_detail_items = []
         self.closed_count = 0
+        self.incomplete_scans = {}
         known = known_source_ids or set()
         recently_evaluated = recently_evaluated_source_ids or set()
-        list_jobs = await self.list_jobs(company_name, tenant)
+        list_jobs = await self.list_jobs(company_name, tenant, resume_offsets=resume_offsets)
         evaluations: list[WorkdayEvaluation] = []
-        candidates = []
+        pending_by_id = {
+            str(item["source_id"]): dict(item)
+            for item in (pending_detail_jobs or [])
+            if item.get("source_id")
+            and str(item["source_id"]) not in known
+            and str(item["source_id"]) not in recently_evaluated
+        }
+        candidates = [] if baseline_mode else list(pending_by_id.values())
+        if baseline_mode:
+            self.pending_detail_items.extend(pending_by_id.values())
+            self.pending_detail_titles.extend(
+                str(item.get("title") or "Untitled") for item in pending_by_id.values()
+            )
+            self.pending_details_count = len(pending_by_id)
+        candidate_ids = set(pending_by_id)
         for item in list_jobs:
             label = item.get("posted_on", "")
             if item.get("age_days") is None and label not in self._unknown_age_labels_logged:
                 LOG.warning("Unrecognized Workday postedOn label: %s", label or "(empty)")
                 self._unknown_age_labels_logged.add(label)
             source_id = item["source_id"]
+            if source_id in candidate_ids:
+                continue
             if source_id in known or source_id in recently_evaluated:
                 continue
             stage_one_rejection = _stage_one_rejection(item, config, tenant, run_time)
@@ -630,6 +730,7 @@ class WorkdayScout:
                 ))
             else:
                 candidates.append(item)
+                candidate_ids.add(source_id)
         details_count = 0
         real_age_disagreements = 0
         for candidate_index, item in enumerate(candidates):
@@ -637,6 +738,7 @@ class WorkdayScout:
                 pending = candidates[candidate_index:]
                 self.pending_details_count += len(pending)
                 self.pending_detail_titles.extend(str(item.get("title") or "Untitled") for item in pending)
+                self.pending_detail_items.extend(pending)
                 break
             details_count += 1
             try:
@@ -648,16 +750,38 @@ class WorkdayScout:
                 self.rate_limit_retry_after_seconds = exc.retry_after_seconds
                 self.pending_details_count += 1
                 self.pending_detail_titles.append(str(item.get("title") or "Untitled"))
+                self.pending_detail_items.append(item)
                 if exc.circuit_open:
                     pending = candidates[candidate_index + 1:]
                     self.pending_details_count += len(pending)
                     self.pending_detail_titles.extend(
                         str(pending_item.get("title") or "Untitled") for pending_item in pending
                     )
+                    self.pending_detail_items.extend(pending)
                     break
                 # Keep trying in feed order. Successful details remain usable;
                 # this requisition is not returned or remembered and is retried
                 # from the list feed on the next run.
+                continue
+            except (httpx.TransportError, OSError) as exc:
+                LOG.warning(
+                    "Workday detail request deferred for tenant=%s source_id=%s (%s)",
+                    tenant.tenant, item["source_id"], type(exc).__name__,
+                )
+                self.pending_details_count += 1
+                self.pending_detail_titles.append(str(item.get("title") or "Untitled"))
+                self.pending_detail_items.append(item)
+                continue
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code < 500:
+                    raise
+                LOG.warning(
+                    "Workday detail request deferred for tenant=%s source_id=%s (HTTP %s)",
+                    tenant.tenant, item["source_id"], exc.response.status_code,
+                )
+                self.pending_details_count += 1
+                self.pending_detail_titles.append(str(item.get("title") or "Untitled"))
+                self.pending_detail_items.append(item)
                 continue
             try:
                 job = normalize_workday_job(

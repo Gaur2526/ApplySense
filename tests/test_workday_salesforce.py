@@ -44,8 +44,9 @@ def test_registry_adds_salesforce_without_changing_tenant_request_settings():
         "country_facet_id": "c4f78be1a8f14da0ab49ce1162348a5e",
         "assume_country": "IN", "search_texts": ["software"], "page_size": 20,
         "max_pages": 15, "max_detail_requests_per_run": 10,
-        "min_interval_seconds": 3600, "request_interval_seconds": 6.0,
-        "details_interval_seconds": 6.0, "reevaluate_after_days": 14,
+        "min_interval_seconds": 21600, "request_interval_seconds": 6.0,
+        "details_interval_seconds": 6.0, "max_retries": 2,
+        "reevaluate_after_days": 14,
         "excluded_title_levels": ["IV", "V", "VI", "4", "5", "6"],
     }
 
@@ -138,8 +139,10 @@ def test_workday_http2_is_disabled_by_default():
 def test_tenant_request_and_detail_intervals_fall_back_and_override_global():
     walmart, salesforce = registry_tenants()
     scout = WorkdayScout(request_interval_seconds=2.5)
-    assert scout._request_interval(walmart, "POST", walmart.host) == 2.5
-    assert scout._request_interval(walmart, "GET", walmart.host) == 2.5
+    assert walmart.request_interval_seconds == 5
+    assert walmart.details_interval_seconds == 5
+    assert scout._request_interval(walmart, "POST", walmart.host) == 5
+    assert scout._request_interval(walmart, "GET", walmart.host) == 5
     assert scout._request_interval(salesforce, "POST", salesforce.host) == 6
     assert scout._request_interval(salesforce, "GET", salesforce.host) == 6
     inherited = walmart.model_copy(update={
@@ -192,8 +195,8 @@ def test_recovered_429_doubles_host_interval_once_for_rest_of_run(monkeypatch, c
         factor = asyncio.run(scenario())
     assert len(requests) == 3
     assert factor == 2
-    assert sleeps[0] == pytest.approx(2.5, abs=0.05)
-    assert sleeps[-1] == pytest.approx(5.0, abs=0.05)
+    assert sleeps[0] == pytest.approx(5.0, abs=0.05)
+    assert sleeps[-1] == pytest.approx(10.0, abs=0.05)
     assert caplog.text.count("host pacing doubled") == 1
 
 

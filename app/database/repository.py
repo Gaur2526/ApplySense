@@ -2,11 +2,13 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 
-from sqlalchemy import exists, select, tuple_, update
+from sqlalchemy import delete, exists, select, tuple_, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from app.database.models import EvaluatedJob, Job, Notification, Run, utc_now
+from app.database.models import (
+    EvaluatedJob, Job, Notification, Run, WorkdayPendingDetail, WorkdayScanState, utc_now,
+)
 from app.utils.hashing import secondary_job_hash, url_hash
 
 
@@ -134,6 +136,68 @@ class JobRepository:
             .order_by(Run.finished_at.desc())
             .limit(1)
         ) or 0)
+
+    def workday_scan_states(self, tenant_key: str) -> dict[str, dict]:
+        rows = self.session.scalars(
+            select(WorkdayScanState).where(WorkdayScanState.tenant_key == tenant_key)
+        )
+        return {
+            row.search_text: {
+                "unreached_offsets": list(row.unreached_offsets or []),
+                "pages_read": row.pages_read,
+                "total_pages": row.total_pages,
+            }
+            for row in rows
+        }
+
+    def replace_workday_scan_states(self, tenant_key: str, states: dict[str, dict]) -> None:
+        self.session.execute(delete(WorkdayScanState).where(
+            WorkdayScanState.tenant_key == tenant_key
+        ))
+        self.session.add_all([
+            WorkdayScanState(
+                tenant_key=tenant_key,
+                search_text=search_text,
+                unreached_offsets=list(state.get("unreached_offsets") or []),
+                pages_read=int(state.get("pages_read") or 0),
+                total_pages=state.get("total_pages"),
+                updated_at=utc_now(),
+            )
+            for search_text, state in states.items()
+            if state.get("unreached_offsets")
+        ])
+        self.session.commit()
+
+    def workday_pending_details(self, tenant_key: str) -> list[dict]:
+        rows = self.session.scalars(
+            select(WorkdayPendingDetail)
+            .where(WorkdayPendingDetail.tenant_key == tenant_key)
+            .order_by(WorkdayPendingDetail.position, WorkdayPendingDetail.id)
+        )
+        return [dict(row.list_job) for row in rows]
+
+    def replace_workday_pending_details(self, tenant_key: str, pending: Iterable[dict]) -> None:
+        pending_rows = list(pending)
+        keep_ids = {str(item["source_id"]) for item in pending_rows if item.get("source_id")}
+        existing = list(self.session.scalars(
+            select(WorkdayPendingDetail).where(WorkdayPendingDetail.tenant_key == tenant_key)
+        ))
+        existing_by_id = {row.source_id: row for row in existing}
+        for row in existing:
+            if row.source_id not in keep_ids:
+                self.session.delete(row)
+        for position, item in enumerate(pending_rows):
+            source_id = str(item["source_id"])
+            row = existing_by_id.get(source_id)
+            if row is None:
+                row = WorkdayPendingDetail(tenant_key=tenant_key, source_id=source_id)
+                self.session.add(row)
+            row.title = str(item.get("title") or "Untitled")[:500]
+            row.external_path = str(item.get("external_path") or "")
+            row.list_job = dict(item)
+            row.position = position
+            row.updated_at = utc_now()
+        self.session.commit()
 
     def notification_statuses(self, job_ids: Iterable[int], *, chunk_size: int = 400) -> dict[int, Notification]:
         found: dict[int, Notification] = {}

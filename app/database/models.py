@@ -92,6 +92,35 @@ class Run(Base):
     closed: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class WorkdayScanState(Base):
+    __tablename__ = "workday_scan_states"
+
+    tenant_key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    search_text: Mapped[str] = mapped_column(String(500), primary_key=True)
+    unreached_offsets: Mapped[list[int]] = mapped_column(JSON, nullable=False, default=list)
+    pages_read: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_pages: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class WorkdayPendingDetail(Base):
+    __tablename__ = "workday_pending_details"
+    __table_args__ = (
+        UniqueConstraint("tenant_key", "source_id", name="uq_workday_pending_tenant_source"),
+        Index("ix_workday_pending_order", "tenant_key", "position"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    external_path: Mapped[str] = mapped_column(Text, nullable=False)
+    list_job: Mapped[dict] = mapped_column(JSON, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class EvaluatedJob(Base):
     __tablename__ = "evaluated_jobs"
     __table_args__ = (
