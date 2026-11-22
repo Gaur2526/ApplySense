@@ -89,7 +89,8 @@ def list_item(
     }
 
 
-def list_response(items, total=999):
+def list_response(items, total=None):
+    total = len(items) if total is None else total
     return {"total": total, "jobPostings": items, "userAuthenticated": False}
 
 
@@ -148,15 +149,15 @@ def test_post_request_uses_exact_list_endpoint_headers_and_space_search_text():
 @pytest.mark.parametrize(
     ("responses", "page_size", "max_pages", "expected_requests"),
     [
-        ([list_response([list_item()], total=400)], 2, 10, 1),  # short page beats total
+        ([list_response([list_item()], total=400)], 2, 10, 10),  # short page, total says continue
         ([list_response([list_item("Software Engineer", "R-1")], total=400),
-          list_response([], total=400)], 1, 10, 2),  # empty page
-        ([list_response([list_item("Software Engineer", "R-1")]),
-          list_response([list_item("Software Engineer", "R-2")]),
-          list_response([list_item("Software Engineer", "R-3")])], 1, 2, 2),  # max pages
+          list_response([], total=400)], 1, 10, 3),  # two consecutive empty pages stop incomplete
+        ([list_response([list_item("Software Engineer", "R-1")], total=3),
+          list_response([list_item("Software Engineer", "R-2")], total=3),
+          list_response([list_item("Software Engineer", "R-3")], total=3)], 1, 2, 2),  # max pages
     ],
 )
-def test_pagination_stops_on_short_empty_or_max_pages(responses, page_size, max_pages, expected_requests):
+def test_pagination_continues_until_total_or_max_pages(responses, page_size, max_pages, expected_requests):
     seen = []
     def handler(request):
         seen.append(json.loads(request.content))
@@ -164,12 +165,325 @@ def test_pagination_stops_on_short_empty_or_max_pages(responses, page_size, max_
     scout, client = make_scout(handler)
     async def scenario():
         try:
-            await scout.list_jobs("Walmart", tenant(page_size=page_size, max_pages=max_pages))
+            await scout.list_jobs(
+                "Walmart", tenant(
+                    page_size=page_size, max_pages=max_pages, request_interval_seconds=0
+                )
+            )
         finally:
             await client.aclose()
     run_async(scenario())
     assert len(seen) == expected_requests
     assert [body["offset"] for body in seen] == [i * page_size for i in range(expected_requests)]
+
+
+def test_walmart_retries_first_page_429_and_reads_all_ten_pages(monkeypatch):
+    calls = []
+
+    async def no_backoff(*_args, **_kwargs):
+        return 0
+
+    monkeypatch.setattr(workday, "_wait_before_retry", no_backoff)
+
+    def handler(request):
+        body = json.loads(request.content)
+        offset = body["offset"]
+        calls.append(offset)
+        if offset == 0 and calls.count(0) <= 3:
+            return httpx.Response(429, request=request)
+        page = offset // 20
+        records = [list_item(req=f"R-{page * 20 + i}") for i in range(20)]
+        return httpx.Response(200, json=list_response(records, total=200), request=request)
+
+    scout, client = make_scout(handler, retries=3)
+
+    async def scenario():
+        try:
+            jobs = await scout.list_jobs(
+                "Walmart", tenant(page_size=20, max_pages=15, request_interval_seconds=0)
+            )
+            return jobs, scout
+        finally:
+            await client.aclose()
+
+    jobs, scout = run_async(scenario())
+    assert calls.count(0) == 4  # Three 429 responses, then a successful retry.
+    assert calls[-10:] == list(range(0, 200, 20))
+    assert len(jobs) == 200
+    assert scout.incomplete_scans == {}
+
+
+def test_short_successful_page_does_not_hide_remaining_walmart_offsets(monkeypatch):
+    calls = []
+
+    async def no_backoff(*_args, **_kwargs):
+        return 0
+
+    monkeypatch.setattr(workday, "_wait_before_retry", no_backoff)
+
+    def handler(request):
+        offset = json.loads(request.content)["offset"]
+        calls.append(offset)
+        if offset == 0 and calls.count(0) <= 3:
+            return httpx.Response(429, request=request)
+        page = offset // 20
+        # Reproduce Workday returning a short first page while `total` still
+        # advertises 200 jobs. Later offsets remain available and full.
+        size = 2 if offset == 0 else 20
+        records = [list_item(req=f"R-{page * 20 + i}") for i in range(size)]
+        return httpx.Response(200, json=list_response(records, total=200), request=request)
+
+    scout, client = make_scout(handler, retries=3)
+
+    async def scenario():
+        try:
+            return await scout.list_jobs(
+                "Walmart", tenant(page_size=20, max_pages=15, request_interval_seconds=0)
+            )
+        finally:
+            await client.aclose()
+
+    jobs = run_async(scenario())
+    assert calls[-10:] == list(range(0, 200, 20))
+    assert len(jobs) == 182
+    assert scout.incomplete_scans == {}
+
+
+def test_walmart_retries_rate_limit_on_page_five_and_finishes_scan(monkeypatch):
+    offsets = []
+    page_five_attempts = 0
+
+    async def no_backoff(*_args, **_kwargs):
+        return 0
+
+    monkeypatch.setattr(workday, "_wait_before_retry", no_backoff)
+
+    def handler(request):
+        nonlocal page_five_attempts
+        offset = json.loads(request.content)["offset"]
+        offsets.append(offset)
+        if offset == 80:
+            page_five_attempts += 1
+            if page_five_attempts <= 3:
+                return httpx.Response(429, request=request)
+        page = offset // 20
+        records = [list_item(req=f"R-{page * 20 + i}") for i in range(20)]
+        return httpx.Response(200, json=list_response(records, total=200), request=request)
+
+    scout, client = make_scout(handler, retries=3)
+
+    async def scenario():
+        try:
+            return await scout.list_jobs(
+                "Walmart", tenant(page_size=20, max_pages=15, request_interval_seconds=0)
+            )
+        finally:
+            await client.aclose()
+
+    jobs = run_async(scenario())
+    assert offsets == [0, 20, 40, 60, 80, 80, 80, 80, 100, 120, 140, 160, 180]
+    assert len(jobs) == 200
+    assert scout.incomplete_scans == {}
+
+
+def test_pagination_with_total_multiple_of_page_size_stops_at_last_full_page():
+    offsets = []
+
+    def handler(request):
+        offset = json.loads(request.content)["offset"]
+        offsets.append(offset)
+        page = offset // 20
+        records = [list_item(req=f"R-{page * 20 + i}") for i in range(20)]
+        return httpx.Response(200, json=list_response(records, total=40), request=request)
+
+    scout, client = make_scout(handler)
+
+    async def scenario():
+        try:
+            return await scout.list_jobs(
+                "Walmart", tenant(page_size=20, max_pages=10, request_interval_seconds=0)
+            )
+        finally:
+            await client.aclose()
+
+    jobs = run_async(scenario())
+    assert offsets == [0, 20]
+    assert len(jobs) == 40
+    assert scout.scan_progress["software engineer"] == {
+        "pages_read": 2, "total_pages": 2, "total_jobs": 40,
+        "complete": True, "end_reason": "complete",
+    }
+
+
+@pytest.mark.parametrize("later_total", [0, "missing"])
+def test_first_successful_page_total_is_authoritative(later_total):
+    offsets = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        offset = body["offset"]
+        offsets.append(offset)
+        total = 60 if offset == 0 else later_total
+        page = offset // 20
+        records = [list_item(req=f"R-{page * 20 + i}") for i in range(20)]
+        response = list_response(records, total=total)
+        if total == "missing":
+            response.pop("total")
+        return httpx.Response(
+            200, json=response, request=request
+        )
+
+    scout, client = make_scout(handler)
+
+    async def scenario():
+        try:
+            return await scout.list_jobs(
+                "Walmart", tenant(page_size=20, max_pages=10, request_interval_seconds=0)
+            )
+        finally:
+            await client.aclose()
+
+    jobs = run_async(scenario())
+    assert offsets == [0, 20, 40]
+    assert len(jobs) == 60
+    assert scout.scan_progress["software engineer"] == {
+        "pages_read": 3, "total_pages": 3, "total_jobs": 60,
+        "complete": True, "end_reason": "complete",
+    }
+
+
+@pytest.mark.parametrize("total_field", ["missing", 0])
+def test_missing_or_zero_first_total_uses_short_page_rule_and_reports_unknown(total_field, caplog):
+    caplog.set_level("INFO")
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        payload = {"jobPostings": [list_item(req="R-SHORT")]}
+        if total_field != "missing":
+            payload["total"] = total_field
+        return httpx.Response(200, json=payload, request=request)
+
+    scout, client = make_scout(handler)
+
+    async def scenario():
+        try:
+            return await scout.list_jobs(
+                "Walmart", tenant(page_size=20, max_pages=10, request_interval_seconds=0)
+            )
+        finally:
+            await client.aclose()
+
+    jobs = run_async(scenario())
+    assert len(calls) == 1
+    assert len(jobs) == 1
+    assert scout.scan_progress["software engineer"] == {
+        "pages_read": 1, "total_pages": None, "total_jobs": None,
+        "complete": True, "end_reason": "complete",
+    }
+    main._log_source_summary({"sources": {"workday/walmart": {
+        "status": "ok", "pending_details": 0,
+        "scan_progress": scout.scan_progress,
+    }}})
+    assert "pages read 1 of unknown (total unknown; complete; software engineer)" in caplog.text
+
+
+def test_one_empty_page_does_not_end_scan_and_offset_reaching_total_completes():
+    offsets = []
+
+    def handler(request):
+        offset = json.loads(request.content)["offset"]
+        offsets.append(offset)
+        records = [] if offset == 20 else [
+            list_item(req=f"R-{offset + i}") for i in range(20)
+        ]
+        return httpx.Response(
+            200, json=list_response(records, total=80), request=request
+        )
+
+    scout, client = make_scout(handler)
+
+    async def scenario():
+        try:
+            return await scout.list_jobs(
+                "Walmart", tenant(page_size=20, max_pages=10, request_interval_seconds=0)
+            )
+        finally:
+            await client.aclose()
+
+    jobs = run_async(scenario())
+    assert offsets == [0, 20, 40, 60]
+    assert len(jobs) == 60
+    assert scout.scan_progress["software engineer"]["end_reason"] == "complete"
+
+
+def test_two_empty_pages_before_total_mark_scan_incomplete_and_warn_once(caplog):
+    offsets = []
+
+    def handler(request):
+        offset = json.loads(request.content)["offset"]
+        offsets.append(offset)
+        records = [] if offset in {20, 40} else [
+            list_item(req=f"R-{offset + i}") for i in range(20)
+        ]
+        return httpx.Response(
+            200, json=list_response(records, total=100), request=request
+        )
+
+    scout, client = make_scout(handler)
+
+    async def scenario():
+        try:
+            return await scout.list_jobs(
+                "Walmart", tenant(page_size=20, max_pages=10, request_interval_seconds=0)
+            )
+        finally:
+            await client.aclose()
+
+    with caplog.at_level("WARNING", logger="app.scouts.workday"):
+        jobs = run_async(scenario())
+    warnings = [
+        record.getMessage() for record in caplog.records
+        if "list ended early: empty pages before total reached" in record.getMessage()
+    ]
+    assert offsets == [0, 20, 40]
+    assert len(jobs) == 20
+    assert warnings == [
+        "Workday tenant walmart: list ended early: empty pages before total reached"
+    ]
+    assert scout.incomplete_scans["software engineer"]["unreached_offsets"] == [60, 80]
+    assert scout.scan_progress["software engineer"] == {
+        "pages_read": 3, "total_pages": 5, "total_jobs": 100,
+        "complete": False, "end_reason": "empty pages",
+    }
+
+
+def test_max_pages_reason_precedes_two_empty_page_reason():
+    offsets = []
+
+    def handler(request):
+        offset = json.loads(request.content)["offset"]
+        offsets.append(offset)
+        records = [] if offset in {20, 40} else [list_item(req="R-0")]
+        return httpx.Response(
+            200, json=list_response(records, total=100), request=request
+        )
+
+    scout, client = make_scout(handler)
+
+    async def scenario():
+        try:
+            return await scout.list_jobs(
+                "Walmart", tenant(
+                    page_size=20, max_pages=3, request_interval_seconds=0
+                )
+            )
+        finally:
+            await client.aclose()
+
+    run_async(scenario())
+    assert offsets == [0, 20, 40]
+    assert scout.scan_progress["software engineer"]["end_reason"] == "max_pages"
 
 
 def test_max_pages_truncation_logs_missing_jobs_warning_once(caplog):
@@ -188,13 +502,17 @@ def test_max_pages_truncation_logs_missing_jobs_warning_once(caplog):
     scout, client = make_scout(handler)
     async def scenario():
         try:
-            return await scout.list_jobs(
-                "Walmart", tenant(page_size=2, max_pages=3, search_texts=["software engineer"])
+            jobs = await scout.list_jobs(
+                "Walmart", tenant(
+                    page_size=2, max_pages=3, search_texts=["software engineer"],
+                    request_interval_seconds=0,
+                )
             )
+            return jobs, scout
         finally:
             await client.aclose()
 
-    jobs = run_async(scenario())
+    jobs, scout = run_async(scenario())
     warnings = [
         record.getMessage() for record in caplog.records
         if record.levelname == "WARNING" and "max_pages reached" in record.getMessage()
@@ -204,6 +522,7 @@ def test_max_pages_truncation_logs_missing_jobs_warning_once(caplog):
     assert warnings == [
         "Workday tenant walmart: max_pages reached, 6 of total 11 jobs seen; some jobs may be missing"
     ]
+    assert scout.scan_progress["software engineer"]["end_reason"] == "max_pages"
 
 
 def test_results_merge_across_search_texts_and_dedupe_by_source_id():
@@ -226,7 +545,10 @@ def test_results_merge_across_search_texts_and_dedupe_by_source_id():
 
 def test_known_ids_do_not_stop_pagination_and_do_not_fetch_details():
     calls = []
-    pages = [list_response([list_item(req="R-1")]), list_response([list_item(req="R-2")])]
+    pages = [
+        list_response([list_item(req="R-1")], total=2),
+        list_response([list_item(req="R-2")], total=2),
+    ]
     def handler(request):
         calls.append(request)
         if request.method == "POST":
@@ -363,7 +685,7 @@ def test_live_walmart_registry_assumption_survives_real_discovery_and_explain(tm
 
     def handler(request):
         if request.method == "POST":
-            return httpx.Response(200, json=list_response([posting], total=203), request=request)
+            return httpx.Response(200, json=list_response([posting], total=1), request=request)
         return httpx.Response(200, json=details, request=request)
 
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=1)
@@ -1202,7 +1524,7 @@ def test_retries_429_and_honors_retry_after(monkeypatch):
             return await scout.fetch_first_page(tenant())
         finally:
             await client.aclose()
-    assert run_async(scenario()) == (999, [])
+    assert run_async(scenario()) == (0, [])
     assert len(attempts) == 2
     assert waits == [(0, "3")]
 
@@ -1224,7 +1546,7 @@ def test_network_timeout_reuses_existing_retry_backoff(monkeypatch):
             return await scout.fetch_first_page(tenant())
         finally:
             await client.aclose()
-    assert run_async(scenario()) == (999, [])
+    assert run_async(scenario()) == (0, [])
     assert len(attempts) == 2
     assert waits == [(0, None)]
 

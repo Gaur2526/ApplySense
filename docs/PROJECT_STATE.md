@@ -46,3 +46,6 @@ max_min_years 2 (reject only if the MINIMUM required years exceeds it); max_age_
 Raw captures live outside the repo in ~/applysense-samples/. Only trimmed, name-free fixtures go in tests/fixtures/. The Accenture findjobs sample was seen but no adapter exists.
 
 ## Status log (agents append one line per task)
+- 2026-11-22: Walmart list scan read only 2 pages on a live run (open bug); Salesforce still 429.
+- 2026-11-22: Fix Walmart Workday list scans stopping early and report page progress. Commit message: Fix Workday pagination and report scan progress. Tests: 327 passed. Decisions needed: none.
+- 2026-11-22: Use the first Workday page total, enforce scan stop conditions, and report scan end reasons. Commit message: Use authoritative Workday totals and report scan end reasons. Tests: 334 passed. Decisions needed: none.

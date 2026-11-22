@@ -366,6 +366,7 @@ class WorkdayScout:
         self._unknown_age_labels_logged: set[str] = set()
         self._request_debug_logged: set[str] = set()
         self.incomplete_scans: dict[str, dict[str, Any]] = {}
+        self.scan_progress: dict[str, dict[str, Any]] = {}
 
     async def close(self) -> None:
         if self._owns_client:
@@ -509,7 +510,7 @@ class WorkdayScout:
         tenant: WorkdayTenantConfig,
         search_text: str,
         offset: int,
-    ) -> tuple[int, list[dict[str, Any]]]:
+    ) -> tuple[int | None, list[dict[str, Any]]]:
         url = f"{self._base_url(tenant)}/jobs"
         body = {
             "appliedFacets": {tenant.country_facet_key: [tenant.country_facet_id]},
@@ -520,8 +521,11 @@ class WorkdayScout:
         payload = await self._request_json("POST", url, json_body=body, tenant=tenant)
         postings = payload.get("jobPostings")
         total = payload.get("total")
-        if isinstance(total, bool) or not isinstance(total, int) or not isinstance(postings, list):
-            raise WorkdayResponseError("Workday list response must contain total and jobPostings")
+        if (
+            total is not None
+            and (isinstance(total, bool) or not isinstance(total, int))
+        ) or not isinstance(postings, list):
+            raise WorkdayResponseError("Workday list response must contain a valid total and jobPostings")
         return total, postings
 
     async def fetch_details(
@@ -546,9 +550,20 @@ class WorkdayScout:
     ) -> list[dict[str, Any]]:
         deduplicated: dict[str, dict[str, Any]] = {}
         self.incomplete_scans = {}
+        self.scan_progress = {}
         prior_states = resume_offsets or {}
         rate_limited = False
         truncated_total: int | None = None
+        empty_pages_warning_logged = False
+
+        def warn_empty_pages_once() -> None:
+            nonlocal empty_pages_warning_logged
+            if not empty_pages_warning_logged:
+                LOG.warning(
+                    "Workday tenant %s: list ended early: empty pages before total reached",
+                    tenant.tenant,
+                )
+                empty_pages_warning_logged = True
 
         def add_records(records: list[dict[str, Any]]) -> None:
             for item in records:
@@ -560,13 +575,32 @@ class WorkdayScout:
 
         def remember_incomplete(
             search_text: str, offsets: list[int], pages_read: int, total_pages: int | None,
+            total_jobs: int | None = None, end_reason: str = "max_pages",
         ) -> None:
-            if offsets:
-                self.incomplete_scans[search_text] = {
-                    "unreached_offsets": sorted(set(offsets)),
-                    "pages_read": pages_read,
-                    "total_pages": total_pages,
-                }
+            self.incomplete_scans[search_text] = {
+                "unreached_offsets": sorted(set(offsets)),
+                "pages_read": pages_read,
+                "total_pages": total_pages,
+            }
+            self.scan_progress[search_text] = {
+                "pages_read": pages_read,
+                "total_pages": total_pages,
+                "total_jobs": total_jobs,
+                "complete": False,
+                "end_reason": end_reason,
+            }
+
+        def record_complete(
+            search_text: str, pages_read: int, total_pages: int | None,
+            total_jobs: int | None, end_reason: str = "complete",
+        ) -> None:
+            self.scan_progress[search_text] = {
+                "pages_read": pages_read,
+                "total_pages": total_pages,
+                "total_jobs": total_jobs,
+                "complete": True,
+                "end_reason": end_reason,
+            }
 
         def page_offsets_from(start: int, total_pages: int | None) -> list[int]:
             if total_pages is None:
@@ -580,67 +614,150 @@ class WorkdayScout:
                 if isinstance(offset, int) and offset >= 0
             })
             pages_read = int(prior.get("pages_read") or 0) if pending_offsets else 0
-            total_pages = prior.get("total_pages") if pending_offsets else None
+            total_pages: int | None = prior.get("total_pages") if pending_offsets else None
+            total_jobs: int | None = None
+            first_success_seen = False
+            empty_page_streak = 0
             budget = tenant.max_pages
-            stopped_for_rate_limit = False
+            stopped_current_scan = False
 
             # Drain persisted offsets before starting a fresh scan at offset 0.
             while pending_offsets and budget > 0:
                 offset = pending_offsets.pop(0)
+                if total_jobs is not None and offset >= total_jobs:
+                    continue
                 try:
                     total, records = await self.fetch_list_page(tenant, search_text, offset)
                 except WorkdayRateLimitedError:
-                    rate_limited = stopped_for_rate_limit = True
-                    total_pages = total_pages or None
+                    rate_limited = True
                     remaining = page_offsets_from(offset, total_pages) if total_pages else [offset, *pending_offsets]
-                    remember_incomplete(search_text, remaining, pages_read, total_pages)
+                    remember_incomplete(
+                        search_text, remaining, pages_read, total_pages, total_jobs, "rate limited"
+                    )
                     break
                 budget -= 1
                 pages_read += 1
-                total_pages = (total + tenant.page_size - 1) // tenant.page_size
+                if not first_success_seen:
+                    first_success_seen = True
+                    total_jobs = total if total and total > 0 else None
+                    total_pages = (
+                        (total_jobs + tenant.page_size - 1) // tenant.page_size
+                        if total_jobs is not None else None
+                    )
                 add_records(records)
-                pending_offsets = [value for value in pending_offsets if value < total]
+                empty_page_streak = empty_page_streak + 1 if not records else 0
+                if total_jobs is not None and offset + tenant.page_size >= total_jobs:
+                    pending_offsets = []
+                else:
+                    pending_offsets = [value for value in pending_offsets if total_jobs is None or value < total_jobs]
+                if empty_page_streak >= 2:
+                    next_offset = offset + tenant.page_size
+                    remaining = [next_offset, *pending_offsets]
+                    remember_incomplete(
+                        search_text, remaining, pages_read, total_pages, total_jobs, "empty pages"
+                    )
+                    warn_empty_pages_once()
+                    stopped_current_scan = True
+                    break
 
             if rate_limited:
                 break
+            if stopped_current_scan:
+                continue
             if pending_offsets:
-                remember_incomplete(search_text, pending_offsets, pages_read, total_pages)
-                if budget == 0 and total_pages:
+                remember_incomplete(
+                    search_text, pending_offsets, pages_read, total_pages, total_jobs,
+                    "max_pages" if budget == 0 else "incomplete",
+                )
+                if budget == 0 and total_jobs is not None:
                     truncated_total = max(truncated_total or 0, total_pages * tenant.page_size)
                 continue
-            if stopped_for_rate_limit:
-                break
 
             # All old offsets were reached. Begin a fresh scan only now.
             offset = 0
             pages_read = 0
             total_pages = None
+            total_jobs = None
+            first_success_seen = False
+            empty_page_streak = 0
             completed = False
-            for _page_index in range(budget):
+            end_reason = "max_pages"
+            while True:
+                # Stop condition 1: the authoritative first-page total is reached.
+                if total_jobs is not None and offset >= total_jobs:
+                    completed = True
+                    end_reason = "complete"
+                    break
+                # Stop condition 2: the configured request budget is exhausted.
+                if budget <= 0:
+                    end_reason = "max_pages"
+                    break
                 try:
                     total, records = await self.fetch_list_page(tenant, search_text, offset)
                 except WorkdayRateLimitedError:
-                    rate_limited = stopped_for_rate_limit = True
+                    rate_limited = True
                     remaining = page_offsets_from(offset, total_pages) if total_pages else [offset]
-                    remember_incomplete(search_text, remaining, pages_read, total_pages)
+                    remember_incomplete(
+                        search_text, remaining, pages_read, total_pages, total_jobs, "rate limited"
+                    )
                     break
+                budget -= 1
                 pages_read += 1
-                total_pages = (total + tenant.page_size - 1) // tenant.page_size
+                if not first_success_seen:
+                    first_success_seen = True
+                    total_jobs = total if total and total > 0 else None
+                    total_pages = (
+                        (total_jobs + tenant.page_size - 1) // tenant.page_size
+                        if total_jobs is not None else None
+                    )
                 add_records(records)
-                if not records or len(records) < tenant.page_size or offset + tenant.page_size >= total:
+                empty_page_streak = empty_page_streak + 1 if not records else 0
+                if total_jobs is not None and offset + tenant.page_size >= total_jobs:
                     completed = True
+                    end_reason = "complete"
+                    break
+                # The total has not been reached; budget exhaustion takes
+                # precedence over the early-empty-page condition.
+                if budget <= 0:
+                    end_reason = "max_pages"
+                    break
+                # Stop condition 3: two empty responses before scan completion.
+                if empty_page_streak >= 2:
+                    end_reason = "empty pages"
+                    remaining = page_offsets_from(offset + tenant.page_size, total_pages)
+                    remember_incomplete(
+                        search_text, remaining, pages_read, total_pages, total_jobs, end_reason
+                    )
+                    warn_empty_pages_once()
+                    stopped_current_scan = True
+                    break
+                # With no usable total, the legacy short-page rule is the only
+                # completion signal. A single empty page is allowed through.
+                if total_jobs is None and records and len(records) < tenant.page_size:
+                    completed = True
+                    end_reason = "complete"
                     break
                 offset += tenant.page_size
-            if stopped_for_rate_limit:
+            if rate_limited:
                 break
-            if not completed and offset < (total_pages or 0) * tenant.page_size:
-                remaining = page_offsets_from(offset, total_pages)
-                remember_incomplete(search_text, remaining, pages_read, total_pages)
-                truncated_total = max(truncated_total or 0, total)
+            if stopped_current_scan:
+                continue
+            if completed:
+                record_complete(search_text, pages_read, total_pages, total_jobs, end_reason)
+            else:
+                remaining = (
+                    page_offsets_from(offset, total_pages)
+                    if total_pages is not None else [offset]
+                )
+                remember_incomplete(
+                    search_text, remaining, pages_read, total_pages, total_jobs, end_reason
+                )
+                if end_reason == "max_pages" and total_jobs is not None:
+                    truncated_total = max(truncated_total or 0, total_jobs)
         if rate_limited:
             # The open host circuit prevented these later queries from being started.
             for search_text in tenant.search_texts[search_index + 1:]:
-                remember_incomplete(search_text, [0], 0, None)
+                remember_incomplete(search_text, [0], 0, None, None, "rate limited")
         if truncated_total is not None:
             LOG.warning(
                 "Workday tenant %s: max_pages reached, %d of total %d jobs seen; some jobs may be missing",

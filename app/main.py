@@ -269,7 +269,8 @@ async def _discover_workday(
                     )
                     status = "rate_limited"
                 else:
-                    status = "ok"
+                    incomplete_scans = dict(getattr(scout, "incomplete_scans", {}))
+                    status = "incomplete" if incomplete_scans else "ok"
                 if stats is not None:
                     stats.setdefault("sources", {})[f"workday/{tenant.tenant}"] = {
                         "status": status,
@@ -277,6 +278,7 @@ async def _discover_workday(
                         "pending_details": pending_details,
                         "pending_detail_titles": list(getattr(scout, "pending_detail_titles", [])),
                         "incomplete_scans": dict(getattr(scout, "incomplete_scans", {})),
+                        "scan_progress": dict(getattr(scout, "scan_progress", {})),
                         "closed": getattr(scout, "closed_count", 0),
                     }
                     stats["pending_details"] = stats.get("pending_details", 0) + pending_details
@@ -436,14 +438,34 @@ def _log_source_summary(discovery_stats: dict) -> None:
         clean_titles = [" ".join(str(title).split()) for title in pending_titles]
         titles_text = f"; pending titles: {', '.join(clean_titles)}" if clean_titles else ""
         scan_states = outcome.get("incomplete_scans") or {}
+        progress = outcome.get("scan_progress") or {
+            text: {
+                **state,
+                "total_jobs": None,
+                "complete": False,
+                "end_reason": "rate limited" if status == "rate_limited" else "max_pages",
+            }
+            for text, state in scan_states.items()
+        }
         scan_parts = []
-        for search_text, state in sorted(scan_states.items()):
+        for search_text, state in sorted(progress.items()):
             total_pages = state.get("total_pages")
-            total_text = str(total_pages) if total_pages is not None else "unknown"
+            total_jobs = state.get("total_jobs")
+            pages_text = str(total_pages) if total_pages is not None else "unknown"
+            jobs_text = str(total_jobs) if total_jobs is not None else "unknown"
+            reason = state.get("end_reason") or ("complete" if state.get("complete") else "max_pages")
             scan_parts.append(
-                f"pages {int(state.get('pages_read', 0))} of {total_text} ({search_text})"
+                f"pages read {int(state.get('pages_read', 0))} of {pages_text} "
+                f"(total {jobs_text}; {reason}; {search_text})"
             )
-        scan_text = f"; incomplete scan: {'; '.join(scan_parts)}" if scan_parts else ""
+        if not scan_parts and source.startswith("workday/"):
+            reason = "rate limited" if status == "rate_limited" else "complete"
+            scan_parts.append(f"pages read 0 of unknown (total unknown; {reason})")
+        incomplete_text = status == "incomplete" or bool(scan_states) or any(
+            not item.get("complete", False) for item in progress.values()
+        )
+        scan_label = "incomplete scan: " if incomplete_text else ""
+        scan_text = f"; {scan_label}{'; '.join(scan_parts)}" if scan_parts else ""
         if status == "rate_limited":
             seconds = max(0.0, float(outcome.get("retry_after_seconds", 0)))
             retry_minutes = max(1, ceil(seconds / 60))
@@ -453,6 +475,11 @@ def _log_source_summary(discovery_stats: dict) -> None:
             )
         elif status == "failed":
             LOG.info("Source %s: failed; pending details=%d%s%s", source, pending, titles_text, scan_text)
+        elif status == "incomplete":
+            LOG.info(
+                "Source %s: incomplete scan; pending details=%d%s%s",
+                source, pending, titles_text, scan_text.replace("; incomplete scan: ", "; "),
+            )
         else:
             LOG.info("Source %s: ok; pending details=%d; closed=%d%s%s",
                      source, pending, int(outcome.get("closed", 0)), titles_text, scan_text)

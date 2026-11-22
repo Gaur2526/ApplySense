@@ -615,6 +615,31 @@ def test_source_summary_formats_rate_limit_pending_and_failures(caplog):
     }})
     assert "Source workday/walmart: rate limited, retry after about 120 min; pending details=4" in caplog.text
     assert "pending titles: Software Engineer" in caplog.text
-    assert "incomplete scan: pages 1 of 3 (software)" in caplog.text
+    assert "incomplete scan: pages read 1 of 3 (total unknown; rate limited; software)" in caplog.text
     assert "Source greenhouse/MongoDB: ok; pending details=0" in caplog.text
     assert "Source workday/other: failed; pending details=1" in caplog.text
+
+
+def test_source_summary_shows_page_counts_for_complete_and_incomplete_workday_scans(caplog):
+    caplog.set_level("INFO")
+    main._log_source_summary({"sources": {
+        "workday/walmart": {
+            "status": "ok", "pending_details": 0,
+            "scan_progress": {"software": {
+                "pages_read": 10, "total_pages": 10, "total_jobs": 200, "complete": True,
+            }},
+        },
+        "workday/salesforce": {
+            "status": "incomplete", "pending_details": 0,
+            "incomplete_scans": {"software": {
+                "pages_read": 2, "total_pages": 3, "unreached_offsets": [40],
+            }},
+            "scan_progress": {"software": {
+                "pages_read": 2, "total_pages": 3, "total_jobs": 59, "complete": False,
+            }},
+        },
+    }})
+    assert "pages read 10 of 10 (total 200; complete; software)" in caplog.text
+    assert "Source workday/salesforce: incomplete scan" in caplog.text
+    assert "pages read 2 of 3 (total 59; max_pages; software)" in caplog.text
+    assert "Source workday/salesforce: ok" not in caplog.text
